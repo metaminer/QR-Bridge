@@ -82,7 +82,7 @@ struct나 화이트닝 로직을 직접 구현하지 않는다.
 
 ## 수신측 동작 요약 (`receiver/decode_video.py` + `receiver/verify.py`)
 
-1. OpenCV로 영상에서 프레임을 순회하며 `pyzbar`로 QR 원시 바이트를 읽는다.
+1. OpenCV로 영상에서 프레임을 순회하며 `zxing-cpp`(`read_barcodes`)로 QR 원시 바이트를 읽는다.
 2. `common.qr_wire.unpack_packet()`으로 화이트닝 해제 + 파싱 → `(packet, filename)`.
    `packet`은 `common.lt_wrapper.LTDecoder.add_packet()`에 전달하고, 처음 수신된
    `filename`을 기억해둔다.

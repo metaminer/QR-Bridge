@@ -1,7 +1,7 @@
 """QR Stream Transfer - receiver entry point.
 
 Reads a video file (mp4/mov) captured by a smartphone camera, decodes QR
-codes from each frame using pyzbar, feeds the recovered LT packets into
+codes from each frame using zxing-cpp, feeds the recovered LT packets into
 ``common.lt_wrapper.LTDecoder``, reconstructs the original file, and verifies
 integrity via ``receiver/verify.py``.
 
@@ -72,16 +72,22 @@ def resolve_output_path(output_arg: Optional[Path | str], original_filename: str
 
 
 def decode_qr_from_frame(frame) -> list[bytes]:
-    """Find and decode all QR codes in a video frame."""
+    """Find and decode all QR codes in a video frame.
+
+    Uses zxing-cpp (native C++, same library swapped in on the sender side
+    for rendering) rather than pyzbar/ZBar: benchmarked on real captured
+    frames plus synthetic blur/rotation/downscale degradation, it matched or
+    beat pyzbar on every case (notably +5/152 frames on a downscaled/low-res
+    simulation) and decoded ~4x faster. Accepts the raw BGR frame directly —
+    no color conversion needed. Uses ``.bytes`` (not ``.text``) so raw binary
+    payloads are returned unmodified regardless of text-mode transcoding.
+    """
     try:
-        from pyzbar import pyzbar
-    except (ImportError, OSError) as error:
-        raise RuntimeError("QR 디코딩에 pyzbar와 ZBar 런타임이 필요합니다") from error
-    # Restrict ZBar to QR. Scanning every supported symbology makes dense QR
-    # frames enter the PDF417 decoder, which can emit harmless assertion
-    # warnings and wastes work before we discard non-QR results anyway.
-    results = pyzbar.decode(frame, symbols=[pyzbar.ZBarSymbol.QRCODE])
-    return [result.data for result in results]
+        import zxingcpp
+    except ImportError as error:
+        raise RuntimeError("QR 디코딩에 zxing-cpp 패키지가 필요합니다") from error
+    results = zxingcpp.read_barcodes(frame, formats=zxingcpp.BarcodeFormat.QRCode)
+    return [bytes(result.bytes) for result in results]
 
 
 def _decode_frame_worker(frame) -> list[bytes]:

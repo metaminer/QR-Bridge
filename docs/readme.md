@@ -45,14 +45,13 @@
 | 역할 | 패키지 |
 |------|--------|
 | LT 인코딩/디코딩 | `lt-code` |
-| QR 코드 생성 | `zxing-cpp` (네이티브 C++ 바인딩 — 아래 참고. `qrcode` → `segno` → `zxing-cpp` 순으로 교체됨) |
+| QR 코드 생성/디코드 | `zxing-cpp` (네이티브 C++ 바인딩 — 아래 참고. 생성: `qrcode`→`segno`→`zxing-cpp`, 디코드: `pyzbar`→`zxing-cpp` 순으로 교체됨) |
 | 이미지 처리 | `Pillow` |
 | 화면 슬라이드쇼 | `tkinter` (표준 라이브러리) |
-| QR 디코드 (수신) | `pyzbar` |
 
 설치:
 ```bash
-pip install lt-code zxing-cpp Pillow pyzbar
+pip install lt-code zxing-cpp Pillow
 ```
 
 **QR 인코딩 라이브러리 교체 이력**: `sender/encode.py`의 `make_qr_image()`가 QR 하나를
@@ -72,7 +71,8 @@ Base64라 세그먼트 최적화가 무의미한데도 순수 Python Reed-Solomo
 
 `zxing-cpp`는 Windows용 사전빌드 wheel(`abi3`, Python 3.12+ 전 버전 호환, 추가 pip
 의존성 없음, DLL 별도 설치 불필요)이 있어 오프라인 `wheels/` 배포에 적합하다.
-실제 QR 이미지 생성 → `pyzbar` 디코드 왕복으로 정확성도 검증했다.
+실제 QR 이미지 생성 → `pyzbar` 디코드 왕복으로 정확성도 검증했다(그 뒤 수신측
+디코더도 아래처럼 `zxing-cpp`로 교체됨).
 
 실사용 시나리오(300KB 파일, 동시 QR 8개, 60fps) 기준 첫 루프 완료 시간:
 
@@ -84,6 +84,15 @@ Base64라 세그먼트 최적화가 무의미한데도 순수 Python Reed-Solomo
 
 3MB 파일(4610프레임)도 35.8초에 처리되어(QR 1장당 평균 7.77ms, 300KB 테스트와
 선형 비례) 메가바이트급 전송도 실용적인 범위에 들어왔다.
+
+**수신측 디코더 교체 (`pyzbar` → `zxing-cpp`)**: `zxing-cpp`가 디코드(`read_barcodes`)도
+지원해서, `receiver/decode_video.py`의 QR 디코딩도 `pyzbar`에서 `zxing-cpp`로
+교체했다. 압축 영상 프레임(정상/블러/회전/다운스케일 열화 조건)으로 인식률을
+비교한 결과 모든 조건에서 `pyzbar`와 동일하거나 더 나았다(다운스케일 열화 조건에서
+152장 중 147 vs **152**로 `zxing-cpp`가 5장 더 인식). 디코딩 속도는 동일 912회
+호출 기준 24.7초 → **5.97초**(약 4.1배). 실제 mp4 왕복 테스트(`working/test_video.py`)
+기준 디코딩 소요시간도 1.1~1.8초 → **0.3~0.4초**로 줄었다. 이제 `pyzbar`는 프로젝트
+어디에서도 쓰이지 않는다.
 
 ---
 
