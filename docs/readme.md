@@ -149,6 +149,29 @@ python -m ui.app
 
 ---
 
+## 실행파일(.exe)로 패키징
+
+Python이 설치되지 않은 PC(또는 망분리 PC)에서도 바로 실행할 수 있도록
+`ui/app.py`를 `PyInstaller`로 단일 실행파일에 묶을 수 있다.
+
+```bash
+build_exe.bat
+```
+
+- `wheels/`에 있는 `pyinstaller`(+의존성)를 오프라인 설치한 뒤
+  `dist/QRBridge.exe`(단일 파일, 콘솔 창 없음)를 만든다.
+- 결과물은 **완전히 독립적**이다 — Python 설치, `wheels/`, 프로젝트 폴더
+  전부 없이 `QRBridge.exe` 파일 하나만 복사해서 실행하면 된다(실제로 별도
+  폴더에 복사해서 실행까지 확인함). 망분리 PC에는 이 exe 하나만 전달하면
+  된다.
+- 용량은 약 75MB(`opencv-python`이 큼). 콘솔 없이(`--windowed`) 빌드되므로
+  콘솔 로그를 봐야 하면 `build_exe.bat`의 `--windowed`를 `--console`로
+  바꿔서 다시 빌드한다.
+- `build/`, `dist/`, `*.spec`은 재생성 가능한 산출물이라 git에는 커밋하지
+  않는다(`.gitignore` 참고).
+
+---
+
 ## 테스트 규칙
 
 테스트가 생성하는 임시 파일(샘플 바이너리, 복원 결과물 등)은 **시스템 임시 폴더가
