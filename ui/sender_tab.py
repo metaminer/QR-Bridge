@@ -38,9 +38,10 @@ class SenderTab(ttk.Frame):
     START_DELAY_MS = 2000
     FHD_WIDTH = 1920
     FHD_HEIGHT = 1080
-    WIDTH_USAGE = 0.90
+    WIDTH_USAGE = 0.98
     HEIGHT_USAGE = 0.62
-    TWO_ROW_HEIGHT_USAGE = 0.78
+    TWO_ROW_HEIGHT_USAGE = 0.88
+    MAX_LOG_LINES = 2000
 
     def __init__(self, parent: tk.Widget):
         super().__init__(parent, padding=12)
@@ -51,45 +52,51 @@ class SenderTab(ttk.Frame):
         self._log_queue: "queue.Queue[str]" = queue.Queue()
         self._sender_app: Optional[SenderApp] = None
         self._loop_started_at: Optional[float] = None
+        self._log_history: list[str] = []
+        self._log_window: Optional[tk.Toplevel] = None
+        self._log_text: Optional[ScrolledText] = None
 
-        self._build_file_row()
-        self._build_settings_row()
-        self._build_controls_row()
+        self._build_toolbar()
         self._build_content_area()
 
         self._poll_log_queue()
 
     # --- layout ----------------------------------------------------------
 
-    def _build_file_row(self) -> None:
+    def _build_toolbar(self) -> None:
         row = ttk.Frame(self)
-        row.pack(fill="x", pady=(0, 8))
-        ttk.Button(row, text="Browse...", command=self._on_browse).pack(side="left")
+        row.pack(fill="x", pady=(0, 6))
+        ttk.Button(row, text="Browse...", command=self._on_browse).grid(row=0, column=0)
         self.file_label_var = tk.StringVar(value="(파일을 선택하세요)")
-        ttk.Label(row, textvariable=self.file_label_var, anchor="w").pack(
-            side="left", fill="x", expand=True, padx=(8, 0)
+        ttk.Label(row, textvariable=self.file_label_var, anchor="w").grid(
+            row=0, column=1, padx=(8, 12), sticky="ew"
         )
-
-    def _build_settings_row(self) -> None:
-        row = ttk.Frame(self)
-        row.pack(fill="x", pady=(0, 8))
-        self.fps_entry = _LabeledEntry(row, "FPS:", "15", width=6)
-        self.fps_entry.pack(side="left", padx=(0, 12))
-        self.redundancy_entry = _LabeledEntry(row, "중복도(overhead):", "1.5", width=6)
-        self.redundancy_entry.pack(side="left", padx=(0, 12))
-        ttk.Label(row, text="동시 QR 수:").pack(side="left")
+        self.fps_entry = _LabeledEntry(row, "FPS:", "15", width=5)
+        self.fps_entry.grid(row=0, column=2, padx=(0, 10))
+        self.redundancy_entry = _LabeledEntry(row, "중복도:", "1.5", width=5)
+        self.redundancy_entry.grid(row=0, column=3, padx=(0, 10))
+        ttk.Label(row, text="동시 QR:").grid(row=0, column=4)
         self.cols_var = tk.StringVar(value="1")
         self.cols_combo = ttk.Combobox(
-            row,
-            textvariable=self.cols_var,
+            row, textvariable=self.cols_var,
             values=tuple(str(value) for value in range(1, 9)),
-            width=4,
-            state="readonly",
+            width=3, state="readonly",
         )
-        self.cols_combo.pack(side="left", padx=(4, 0))
+        self.cols_combo.grid(row=0, column=5, padx=(4, 10))
         self.cols_combo.bind("<<ComboboxSelected>>", self._update_auto_size_label)
         self.auto_size_var = tk.StringVar()
-        ttk.Label(row, textvariable=self.auto_size_var).pack(side="left", padx=(12, 0))
+        ttk.Label(row, textvariable=self.auto_size_var).grid(row=0, column=6, padx=(0, 10))
+        self.start_button = ttk.Button(row, text="시작", command=self._on_start)
+        self.start_button.grid(row=0, column=7)
+        self.stop_button = ttk.Button(row, text="정지", command=self._on_stop, state="disabled")
+        self.stop_button.grid(row=0, column=8, padx=(6, 10))
+        self.log_button = ttk.Button(row, text="로그 보기", command=self._show_log_popup)
+        self.log_button.grid(row=0, column=9, padx=(0, 10))
+        self.status_var = tk.StringVar(value="대기 중")
+        ttk.Label(row, textvariable=self.status_var, anchor="e").grid(
+            row=0, column=10, sticky="e"
+        )
+        row.columnconfigure(1, weight=1)
         self._update_auto_size_label()
 
     def _auto_tile_size(self, cols: int) -> int:
@@ -103,7 +110,7 @@ class SenderTab(ttk.Frame):
         grid_cols = math.ceil(cols / rows)
         tile_size = min(usable_width // grid_cols, usable_height // rows)
         if rows == 2:
-            tile_size = min(tile_size, 420)
+            tile_size = min(tile_size, 460)
         return max(140, tile_size)
 
     def _update_auto_size_label(self, _event=None) -> None:
@@ -119,22 +126,9 @@ class SenderTab(ttk.Frame):
             f"전체 {tile_size * grid_cols}×{tile_size * rows}px"
         )
 
-    def _build_controls_row(self) -> None:
-        row = ttk.Frame(self)
-        row.pack(fill="x", pady=(0, 8))
-        self.start_button = ttk.Button(row, text="시작", command=self._on_start)
-        self.start_button.pack(side="left")
-        self.stop_button = ttk.Button(row, text="정지", command=self._on_stop, state="disabled")
-        self.stop_button.pack(side="left", padx=(8, 0))
-
     def _build_content_area(self) -> None:
-        content = ttk.Panedwindow(self, orient="vertical")
-        content.pack(fill="both", expand=True)
-
-        qr_panel = ttk.LabelFrame(content, text="QR 슬라이드쇼", padding=8)
-        log_panel = ttk.LabelFrame(content, text="전송 로그", padding=8)
-        content.add(qr_panel, weight=8)
-        content.add(log_panel, weight=1)
+        qr_panel = ttk.LabelFrame(self, text="QR 슬라이드쇼", padding=4)
+        qr_panel.pack(fill="both", expand=True)
 
         self._qr_container = ttk.Frame(qr_panel)
         self._qr_container.pack(fill="both", expand=True)
@@ -147,9 +141,6 @@ class SenderTab(ttk.Frame):
         )
         self._qr_placeholder.bind("<Configure>", self._draw_qr_placeholder)
         self._qr_placeholder.pack(fill="both", expand=True)
-
-        self.log_text = ScrolledText(log_panel, height=3, state="disabled", wrap="word")
-        self.log_text.pack(fill="both", expand=True)
 
     def _draw_qr_placeholder(self, _event=None) -> None:
         canvas = self._qr_placeholder
@@ -284,14 +275,18 @@ class SenderTab(ttk.Frame):
         )
 
     def _on_frame_displayed(self, frame_number: int, loop_number: int) -> None:
-        # One entry per pass shows ongoing activity without flooding the log.
+        self.status_var.set(f"재생: frame {frame_number} · loop {loop_number}")
         if frame_number == 1:
             now = time.perf_counter()
             if self._loop_started_at is not None:
                 elapsed = now - self._loop_started_at
-                self._log(f"[재생] loop {loop_number - 1} 완료 · 소요시간 {elapsed:.2f}초")
+                self._log(
+                    f"loop {loop_number - 1} 완료 {elapsed:.2f}초 → "
+                    f"loop {loop_number} 시작"
+                )
             filename = self.file_path.name if self.file_path else ""
-            self._log(f"[재생] loop {loop_number} 시작 ({filename})")
+            if self._loop_started_at is None:
+                self._log(f"loop {loop_number} 시작 ({filename})")
             self._loop_started_at = now
 
     def _clear_qr_display(self, *, show_placeholder: bool = True) -> None:
@@ -316,16 +311,71 @@ class SenderTab(ttk.Frame):
     def _log(self, message: str) -> None:
         self._log_queue.put(message)
 
+    def _show_log_popup(self) -> None:
+        if self._log_window is not None and self._log_window.winfo_exists():
+            self._log_window.deiconify()
+            self._log_window.lift()
+            self._log_window.focus_force()
+            return
+
+        window = tk.Toplevel(self)
+        window.title("QR 전송 로그")
+        window.geometry("760x420")
+        window.minsize(520, 260)
+        window.transient(self.winfo_toplevel())
+        window.protocol("WM_DELETE_WINDOW", self._close_log_popup)
+
+        text = ScrolledText(window, wrap="word", state="normal")
+        text.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        if self._log_history:
+            text.insert("end", "\n".join(self._log_history) + "\n")
+            text.see("end")
+        text.configure(state="disabled")
+
+        controls = ttk.Frame(window)
+        controls.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(controls, text="로그 지우기", command=self._clear_log_history).pack(side="left")
+        ttk.Button(controls, text="닫기", command=self._close_log_popup).pack(side="right")
+        self._log_window = window
+        self._log_text = text
+
+    def _close_log_popup(self) -> None:
+        if self._log_window is not None:
+            try:
+                self._log_window.destroy()
+            except tk.TclError:
+                pass
+        self._log_window = None
+        self._log_text = None
+
+    def _clear_log_history(self) -> None:
+        self._log_history.clear()
+        if self._log_text is not None and self._log_text.winfo_exists():
+            self._log_text.configure(state="normal")
+            self._log_text.delete("1.0", "end")
+            self._log_text.configure(state="disabled")
+
+    def _append_popup_log(self, message: str) -> None:
+        if self._log_text is None or not self._log_text.winfo_exists():
+            return
+        self._log_text.configure(state="normal")
+        self._log_text.insert("end", message + "\n")
+        self._log_text.see("end")
+        self._log_text.configure(state="disabled")
+
     def _poll_log_queue(self) -> None:
+        latest = None
         try:
             while True:
-                message = self._log_queue.get_nowait()
-                self.log_text.configure(state="normal")
-                self.log_text.insert("end", message + "\n")
-                self.log_text.see("end")
-                self.log_text.configure(state="disabled")
+                latest = self._log_queue.get_nowait()
+                self._log_history.append(latest)
+                if len(self._log_history) > self.MAX_LOG_LINES:
+                    del self._log_history[: len(self._log_history) - self.MAX_LOG_LINES]
+                self._append_popup_log(latest)
         except queue.Empty:
             pass
+        if latest is not None:
+            self.status_var.set(latest)
         self.after(100, self._poll_log_queue)
 
     def _reset_buttons(self) -> None:

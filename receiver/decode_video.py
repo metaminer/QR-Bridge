@@ -76,7 +76,11 @@ def decode_qr_from_frame(frame) -> list[bytes]:
         from pyzbar import pyzbar
     except (ImportError, OSError) as error:
         raise RuntimeError("QR 디코딩에 pyzbar와 ZBar 런타임이 필요합니다") from error
-    return [result.data for result in pyzbar.decode(frame) if result.type == "QRCODE"]
+    # Restrict ZBar to QR. Scanning every supported symbology makes dense QR
+    # frames enter the PDF417 decoder, which can emit harmless assertion
+    # warnings and wastes work before we discard non-QR results anyway.
+    results = pyzbar.decode(frame, symbols=[pyzbar.ZBarSymbol.QRCODE])
+    return [result.data for result in results]
 
 
 def decode_video(

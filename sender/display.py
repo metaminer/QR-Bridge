@@ -189,7 +189,7 @@ class SenderApp:
         for tile, image_item, overlay in zip(self._tiles, self._image_items, self._overlays):
             width = max(1, tile.winfo_width())
             height = max(1, tile.winfo_height())
-            tile.coords(image_item, width // 2, max(1, (height - 34) // 2))
+            tile.coords(image_item, width // 2, height // 2)
             tile.coords(overlay, width // 2, max(12, height - 18))
 
     def _update_countdown(self) -> None:
@@ -210,11 +210,7 @@ class SenderApp:
     def _fit_to_canvas(self, img: Image.Image, tile_index: int = 0) -> Image.Image:
         canvas = self._tiles[tile_index]
         canvas_width = max(1, canvas.winfo_width())
-        # Keep only the space actually occupied by the bottom status text.
-        # With two FHD rows, the previous 42px reserve plus 16px margin left
-        # just under 298px, forcing a 149px QR to remain at 1x. This budget
-        # permits the lossless 2x size while keeping the overlay separate.
-        canvas_height = max(1, canvas.winfo_height() - 30)
+        canvas_height = max(1, canvas.winfo_height())
         available = max(1, min(canvas_width, canvas_height, self.tile_size) - 4)
         w, h = img.size
         scale = max(1, available // max(w, h))
@@ -312,10 +308,7 @@ class SenderApp:
             )
             self._tiles[tile_index].itemconfigure(
                 self._overlays[tile_index],
-                text=(
-                    f"frame {packet_index + 1}/{self.packet_count}  |  "
-                    f"loop {displayed_loop}  |  {self.fps:g} fps"
-                ),
+                text="",
             )
         self._position_items()
         if self.progress_callback:
