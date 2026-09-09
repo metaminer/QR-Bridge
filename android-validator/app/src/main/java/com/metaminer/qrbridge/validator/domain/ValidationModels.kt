@@ -34,6 +34,11 @@ sealed interface ValidationState {
     data class Ready(val uri: Uri, val displayName: String) : ValidationState
     data class ReadingMetadata(val displayName: String) : ValidationState
     data class Scanning(val displayName: String, val progress: ValidationProgress) : ValidationState
+    data class Trimming(
+        val displayName: String,
+        val progress: ValidationProgress,
+        val cutoffUs: Long,
+    ) : ValidationState
     data class Success(
         val displayName: String,
         val filename: String,
@@ -41,6 +46,7 @@ sealed interface ValidationState {
         val expectedHash: String,
         val actualHash: String,
         val progress: ValidationProgress,
+        val trimmedAtUs: Long,
     ) : ValidationState
 
     data class Insufficient(
@@ -51,4 +57,3 @@ sealed interface ValidationState {
 
     data class Error(val displayName: String?, val message: String) : ValidationState
 }
-

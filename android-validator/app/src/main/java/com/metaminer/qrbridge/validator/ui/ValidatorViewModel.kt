@@ -11,6 +11,7 @@ import com.metaminer.qrbridge.validator.protocol.ProtocolSessionFactory
 import com.metaminer.qrbridge.validator.protocol.Qrt2ProtocolSession
 import com.metaminer.qrbridge.validator.qr.MlKitMultiQrScanner
 import com.metaminer.qrbridge.validator.video.RetrieverVideoFrameSource
+import com.metaminer.qrbridge.validator.video.Mp4VideoTrimmer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +25,7 @@ class ValidatorViewModel(application: Application) : AndroidViewModel(applicatio
         frameSource = RetrieverVideoFrameSource(application.contentResolver),
         scanner = scanner,
         protocolFactory = ProtocolSessionFactory { Qrt2ProtocolSession() },
+        videoTrimmer = Mp4VideoTrimmer(application, application.contentResolver),
     )
     private val _state = MutableStateFlow<ValidationState>(ValidationState.Idle)
     val state: StateFlow<ValidationState> = _state.asStateFlow()
@@ -34,6 +36,13 @@ class ValidatorViewModel(application: Application) : AndroidViewModel(applicatio
     fun select(uri: Uri) {
         validationJob?.cancel()
         selectedUri = uri
+        runCatching {
+            getApplication<Application>().contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        }
         selectedName = displayName(uri)
         _state.value = ValidationState.Ready(uri, selectedName)
     }
@@ -43,7 +52,11 @@ class ValidatorViewModel(application: Application) : AndroidViewModel(applicatio
         validationJob?.cancel()
         validationJob = viewModelScope.launch {
             try {
-                coordinator.validate(uri, selectedName).collect { _state.value = it }
+                coordinator.validate(
+                    uri = uri,
+                    displayName = selectedName,
+                    sampleFps = FALLBACK_SAMPLE_FPS,
+                ).collect { _state.value = it }
             } catch (_: CancellationException) {
                 _state.value = ValidationState.Ready(uri, selectedName)
             } catch (error: Exception) {
@@ -67,5 +80,9 @@ class ValidatorViewModel(application: Application) : AndroidViewModel(applicatio
             if (index >= 0 && cursor.moveToFirst()) return cursor.getString(index)
         }
         return uri.lastPathSegment ?: "영상"
+    }
+
+    companion object {
+        private const val FALLBACK_SAMPLE_FPS = 30
     }
 }

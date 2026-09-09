@@ -5,24 +5,28 @@ import com.metaminer.qrbridge.validator.protocol.ProtocolSessionFactory
 import com.metaminer.qrbridge.validator.protocol.VerifiedFile
 import com.metaminer.qrbridge.validator.qr.MultiQrScanner
 import com.metaminer.qrbridge.validator.video.VideoFrameSource
+import com.metaminer.qrbridge.validator.video.VideoTrimmer
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlin.math.roundToInt
 
 class ValidationCoordinator(
     private val frameSource: VideoFrameSource,
     private val scanner: MultiQrScanner,
     private val protocolFactory: ProtocolSessionFactory,
+    private val videoTrimmer: VideoTrimmer,
 ) {
-    fun validate(uri: Uri, displayName: String, sampleFps: Int = 15): Flow<ValidationState> = flow {
+    fun validate(uri: Uri, displayName: String, sampleFps: Int = 30): Flow<ValidationState> = flow {
         emit(ValidationState.ReadingMetadata(displayName))
         val metadata = frameSource.metadata(uri)
+        val effectiveSampleFps = selectSampleFps(metadata.capturedFrameRate, sampleFps)
         val session = protocolFactory.create()
         var frames = 0
         var qrDetected = 0
         var lastPositionUs = 0L
 
         try {
-            frameSource.frames(uri, sampleFps).collect { frame ->
+            frameSource.frames(uri, effectiveSampleFps).collect { frame ->
                 frame.use {
                     lastPositionUs = frame.timestampUs
                     frames += 1
@@ -50,6 +54,14 @@ class ValidationCoordinator(
                 }
             }
         } catch (finished: VerificationFinished) {
+            val cutoffUs = minOf(
+                metadata.durationUs,
+                finished.progress.positionUs + TRIM_SAFETY_MARGIN_US,
+            )
+            if (cutoffUs < metadata.durationUs) {
+                emit(ValidationState.Trimming(displayName, finished.progress, cutoffUs))
+                videoTrimmer.trimInPlace(uri, cutoffUs)
+            }
             emit(
                 ValidationState.Success(
                     displayName = displayName,
@@ -58,6 +70,7 @@ class ValidationCoordinator(
                     expectedHash = finished.result.expectedHash,
                     actualHash = finished.result.actualHash,
                     progress = finished.progress,
+                    trimmedAtUs = cutoffUs,
                 ),
             )
             return@flow
@@ -91,4 +104,15 @@ class ValidationCoordinator(
         val result: VerifiedFile,
         val progress: ValidationProgress,
     ) : RuntimeException(null, null, false, false)
+
+    companion object {
+        private const val TRIM_SAFETY_MARGIN_US = 500_000L
+    }
 }
+
+internal fun selectSampleFps(capturedFrameRate: Float?, fallbackSampleFps: Int): Int =
+    capturedFrameRate
+        ?.takeIf { it.isFinite() && it > 0f }
+        ?.roundToInt()
+        ?.coerceIn(1, 60)
+        ?: fallbackSampleFps.coerceIn(1, 60)
