@@ -14,7 +14,7 @@ from typing import List, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import segno
+import zxingcpp
 from PIL import Image
 
 from common.lt_wrapper import LTEncoder, Packet
@@ -52,28 +52,34 @@ def encode_file(
 def make_qr_image(payload: bytes, box_size: int = 8, border: int = 4) -> Image.Image:
     """Render *payload* as a QR code image.
 
-    Uses ``segno`` rather than ``qrcode``: for this project's payload sizes
-    (~1.4KB base64, QR version ~30+) it measured ~36% faster end to end
-    (encode + rasterize: 202.9ms -> 129.9ms with a numpy raster step) and a
-    further ~27% faster (129.9ms -> 95.0ms) once the raster step was
-    rewritten below to pack pixels straight into a bytes buffer instead of
-    round-tripping through numpy — a ~2.1x total speedup over the previous
-    ``qrcode``-based implementation, with no new hard dependency. See
-    docs/packet_spec.md for the full benchmark writeup.
+    Uses ``zxing-cpp`` (native C++ ZXing bindings, prebuilt Windows wheel, no
+    extra runtime dependency) instead of the pure-Python ``segno``/``qrcode``:
+    measured ~4.8ms per QR here versus segno's ~95ms (~20x) and qrcode's
+    ~203ms (~42x), verified correct via a real QR-image -> pyzbar decode
+    round trip. See docs/packet_spec.md for the full benchmark writeup.
     """
-    qr = segno.make(payload, error="m")
-    matrix = qr.matrix
-    size = len(matrix)
-    full = size + border * 2
-    buf = bytearray(b"\xff" * (full * full))
-    for row_index, row in enumerate(matrix):
-        base = (row_index + border) * full + border
-        for col_index, is_dark in enumerate(row):
-            if is_dark:
-                buf[base + col_index] = 0
-    img = Image.frombytes("L", (full, full), bytes(buf)).convert("RGB")
+    barcode = zxingcpp.create_barcode(payload, zxingcpp.BarcodeFormat.QRCode, ecLevel="M")
+    if not barcode.valid:
+        raise ValueError("zxing-cpp failed to encode this payload as a QR code")
+    if border == 4:
+        # 4 modules is zxing-cpp's own default quiet zone, so this is the
+        # common case (every caller in this codebase uses the default
+        # border=4) and skips the manual padding pass below entirely.
+        raw = barcode.to_image(scale=1, add_quiet_zones=True)
+        img = Image.frombytes("L", (raw.shape[1], raw.shape[0]), bytes(raw)).convert("RGB")
+    else:
+        raw = barcode.to_image(scale=1, add_quiet_zones=False)
+        size = raw.shape[0]
+        full = size + border * 2
+        buf = bytearray(b"\xff" * (full * full))
+        raw_bytes = bytes(raw)
+        for row in range(size):
+            src_base = row * size
+            dst_base = (row + border) * full + border
+            buf[dst_base : dst_base + size] = raw_bytes[src_base : src_base + size]
+        img = Image.frombytes("L", (full, full), bytes(buf)).convert("RGB")
     if box_size != 1:
-        img = img.resize((full * box_size, full * box_size), Image.NEAREST)
+        img = img.resize((img.width * box_size, img.height * box_size), Image.NEAREST)
     return img
 
 

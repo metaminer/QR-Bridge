@@ -45,33 +45,45 @@
 | 역할 | 패키지 |
 |------|--------|
 | LT 인코딩/디코딩 | `lt-code` |
-| QR 코드 생성 | `segno` (기존 `qrcode`에서 교체 — 아래 참고) |
+| QR 코드 생성 | `zxing-cpp` (네이티브 C++ 바인딩 — 아래 참고. `qrcode` → `segno` → `zxing-cpp` 순으로 교체됨) |
 | 이미지 처리 | `Pillow` |
 | 화면 슬라이드쇼 | `tkinter` (표준 라이브러리) |
 | QR 디코드 (수신) | `pyzbar` |
 
 설치:
 ```bash
-pip install lt-code segno Pillow pyzbar
+pip install lt-code zxing-cpp Pillow pyzbar
 ```
 
-**`qrcode` → `segno` 교체 이유**: `sender/encode.py`의 `make_qr_image()`가 QR 하나를
-만드는 데(이미지 변환 포함) `qrcode` 기준 약 203ms 걸렸는데, 대부분 QR 페이로드가
+**QR 인코딩 라이브러리 교체 이력**: `sender/encode.py`의 `make_qr_image()`가 QR 하나를
+만드는 데(인코딩+이미지 변환) `qrcode` 기준 약 203ms 걸렸는데, 대부분 QR 페이로드가
 Base64라 세그먼트 최적화가 무의미한데도 순수 Python Reed-Solomon 연산 자체가
-느린 게 원인이었다. 실측 비교:
+느린 게 원인이었다. 순수 Python 대안들을 실측한 뒤, 네이티브 C++ 확장까지 조사해서
+최종적으로 `zxing-cpp`로 교체했다:
 
-| 방식 | QR 1장 생성(인코딩+이미지 변환) |
+| 방식 | QR 1장 생성(인코딩+이미지 변환) | 비고 |
+|------|------|------|
+| `qrcode` (최초) | 202.9 ms | 순수 Python |
+| `cv2.QRCodeEncoder` | 277~381 ms | OpenCV 내장, 새 의존성 불필요하지만 오히려 더 느려 기각 |
+| `segno` + numpy 래스터 | 129.9 ms | 순수 Python |
+| `segno` + 순수 bytearray 래스터 | 95.0 ms | 순수 Python, 한때 채택(약 2.1배) |
+| `qrcodegen` | 295.9 ms | 순수 Python, 기각 |
+| **`zxing-cpp`(네이티브 C++, 현재 채택)** | **4.84 ms** | **qrcode 대비 약 42배, segno 대비 약 20배** |
+
+`zxing-cpp`는 Windows용 사전빌드 wheel(`abi3`, Python 3.12+ 전 버전 호환, 추가 pip
+의존성 없음, DLL 별도 설치 불필요)이 있어 오프라인 `wheels/` 배포에 적합하다.
+실제 QR 이미지 생성 → `pyzbar` 디코드 왕복으로 정확성도 검증했다.
+
+실사용 시나리오(300KB 파일, 동시 QR 8개, 60fps) 기준 첫 루프 완료 시간:
+
+| 단계 | 첫 루프 시간 |
 |------|------|
-| `qrcode` | 202.9 ms |
-| `segno` + numpy 래스터 | 129.9 ms |
-| `segno` + 순수 bytearray 래스터(채택) | **95.0 ms** (약 2.1배 빠름) |
+| `qrcode` (최초) | ~30초 |
+| `segno` | 23.95초 |
+| `zxing-cpp`(현재) | **3.46초** |
 
-`cv2.QRCodeEncoder`(OpenCV 내장, 새 의존성 불필요)도 시도했지만 오히려 277~381ms로
-더 느려서 채택하지 않았다. numpy 기반 래스터화도 순수 `bytearray` 직접 채우기보다
-느려서(129.9ms vs 95.0ms) 새 의존성(numpy) 없이 `sender/encode.py`에 직접 구현했다.
-실사용 시나리오(300KB 파일, 동시 QR 8개, 60fps) 기준 첫 루프 완료 시간은 26.6초 →
-23.95초로 단축됐다(이론적 처리량 한계는 24.8초 → 18.3초로 더 크게 개선되지만
-Tkinter 통합 오버헤드가 남아 있어 체감 개선폭은 그보다 작다).
+3MB 파일(4610프레임)도 35.8초에 처리되어(QR 1장당 평균 7.77ms, 300KB 테스트와
+선형 비례) 메가바이트급 전송도 실용적인 범위에 들어왔다.
 
 ---
 
