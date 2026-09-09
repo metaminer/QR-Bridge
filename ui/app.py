@@ -55,7 +55,28 @@ class App(tk.Tk):
             self.geometry(f"{width}x{height}+0+0")
 
 
+def _enable_windows_dpi_awareness() -> None:
+    """Without this, Windows bitmap-scales the whole app on high-DPI
+    displays, and Tk popup widgets (e.g. ttk.Combobox's dropdown list, which
+    is its own top-level window) get positioned using coordinates that don't
+    match the scaled screen — they render far from the widget that opened
+    them. Must be called before the Tk root is created.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
 def main() -> int:
+    _enable_windows_dpi_awareness()
     app = App()
     app.mainloop()
     return 0
