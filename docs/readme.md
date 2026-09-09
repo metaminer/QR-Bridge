@@ -45,15 +45,33 @@
 | 역할 | 패키지 |
 |------|--------|
 | LT 인코딩/디코딩 | `lt-code` |
-| QR 코드 생성 | `qrcode` |
+| QR 코드 생성 | `segno` (기존 `qrcode`에서 교체 — 아래 참고) |
 | 이미지 처리 | `Pillow` |
 | 화면 슬라이드쇼 | `tkinter` (표준 라이브러리) |
 | QR 디코드 (수신) | `pyzbar` |
 
 설치:
 ```bash
-pip install lt-code qrcode Pillow pyzbar
+pip install lt-code segno Pillow pyzbar
 ```
+
+**`qrcode` → `segno` 교체 이유**: `sender/encode.py`의 `make_qr_image()`가 QR 하나를
+만드는 데(이미지 변환 포함) `qrcode` 기준 약 203ms 걸렸는데, 대부분 QR 페이로드가
+Base64라 세그먼트 최적화가 무의미한데도 순수 Python Reed-Solomon 연산 자체가
+느린 게 원인이었다. 실측 비교:
+
+| 방식 | QR 1장 생성(인코딩+이미지 변환) |
+|------|------|
+| `qrcode` | 202.9 ms |
+| `segno` + numpy 래스터 | 129.9 ms |
+| `segno` + 순수 bytearray 래스터(채택) | **95.0 ms** (약 2.1배 빠름) |
+
+`cv2.QRCodeEncoder`(OpenCV 내장, 새 의존성 불필요)도 시도했지만 오히려 277~381ms로
+더 느려서 채택하지 않았다. numpy 기반 래스터화도 순수 `bytearray` 직접 채우기보다
+느려서(129.9ms vs 95.0ms) 새 의존성(numpy) 없이 `sender/encode.py`에 직접 구현했다.
+실사용 시나리오(300KB 파일, 동시 QR 8개, 60fps) 기준 첫 루프 완료 시간은 26.6초 →
+23.95초로 단축됐다(이론적 처리량 한계는 24.8초 → 18.3초로 더 크게 개선되지만
+Tkinter 통합 오버헤드가 남아 있어 체감 개선폭은 그보다 작다).
 
 ---
 

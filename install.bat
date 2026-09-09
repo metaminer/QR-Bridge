@@ -1,7 +1,7 @@
 @echo off
 cd /d %~dp0
 echo [install] offline packages...
-C:\Python314\python.exe -m pip install --no-index --find-links=wheels qrcode Pillow lt-code pyzbar
+C:\Python314\python.exe -m pip install --no-index --find-links=wheels segno Pillow lt-code pyzbar
 if errorlevel 1 (
     echo [error] core package install failed. check wheels\*.whl
     pause
