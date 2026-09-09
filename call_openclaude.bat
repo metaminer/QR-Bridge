@@ -1,0 +1,1 @@
+openclaude --tools "Read,Grep,Glob,Edit,Write,Bash"

@@ -1,0 +1,14 @@
+# Byte-compiled / cache
+__pycache__/
+*.pyc
+
+# Offline install payloads (large, regenerable from pip)
+wheels/
+installers/
+
+# Test/run artifacts (samples, recovered files, captured videos)
+working/
+
+# Editor/tool state
+.claude/
+.openclaude/

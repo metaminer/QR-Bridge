@@ -1,0 +1,200 @@
+"""QR Stream Transfer - receiver entry point.
+
+Reads a video file (mp4/mov) captured by a smartphone camera, decodes QR
+codes from each frame using pyzbar, feeds the recovered LT packets into
+``common.lt_wrapper.LTDecoder``, reconstructs the original file, and verifies
+integrity via ``receiver/verify.py``.
+
+CLI:
+    python receiver/decode_video.py --video <path> [--output <path or dir>]
+    (or: python -m receiver.decode_video --video <path> [--output <path or dir>])
+
+The original filename (and extension) travels inside every QR frame (see
+docs/packet_spec.md), so --output is optional: if omitted, the file is
+restored under its original name in the current directory. If --output
+names an existing directory (or ends with a path separator), the original
+name is used inside that directory. Otherwise --output is used verbatim.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import struct
+import sys
+import time
+from pathlib import Path
+from typing import Callable, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from common.lt_wrapper import LTDecoder
+from common.qr_wire import unpack_packet
+from receiver.verify import verify_and_report
+
+
+ProgressCallback = Callable[[int, Optional[int], int, int], None]
+LogCallback = Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class DecodeResult:
+    output_path: Path
+    original_filename: str
+    packets_received: int
+    target_packets: int
+    frames_processed: int
+    frames_with_qr: int
+    expected_hash: str
+    actual_hash: str
+    hash_ok: bool
+    elapsed: float
+
+
+def resolve_output_path(output_arg: Optional[Path | str], original_filename: str) -> Path:
+    """Decide where to write the restored file.
+
+    - No --output: use the original filename in the current directory.
+    - --output names an existing directory (or ends with a path separator):
+      use the original filename inside that directory.
+    - --output names a file path: use it verbatim (explicit override).
+    """
+    if not original_filename:
+        original_filename = "restored.bin"
+    if output_arg is None:
+        return Path(original_filename)
+    output_path = Path(output_arg)
+    looks_like_dir = str(output_arg).endswith(("/", "\\"))
+    if output_path.is_dir() or looks_like_dir:
+        return output_path / original_filename
+    return output_path
+
+
+def decode_qr_from_frame(frame) -> list[bytes]:
+    """Find and decode all QR codes in a video frame."""
+    try:
+        from pyzbar import pyzbar
+    except (ImportError, OSError) as error:
+        raise RuntimeError("QR 디코딩에 pyzbar와 ZBar 런타임이 필요합니다") from error
+    return [result.data for result in pyzbar.decode(frame) if result.type == "QRCODE"]
+
+
+def decode_video(
+    video_path: Path | str,
+    output_path: Optional[Path | str] = None,
+    *,
+    progress_callback: Optional[ProgressCallback] = None,
+    log_callback: Optional[LogCallback] = None,
+) -> DecodeResult:
+    """Decode one video and write the recovered file.
+
+    *output_path* is optional — see the module docstring for how it is
+    resolved against the original filename carried in the QR frames.
+
+    This function contains no tkinter calls, so a GUI can safely run it in a
+    worker thread. Callbacks execute on that same worker thread.
+    """
+    from common.hash_verify import sha256_file
+
+    video_path = Path(video_path)
+    log = log_callback or (lambda _message: None)
+    try:
+        import cv2
+    except ImportError as error:
+        raise RuntimeError("영상 디코딩에 opencv-python 패키지가 필요합니다") from error
+    if not video_path.is_file():
+        raise FileNotFoundError(f"영상 파일을 찾을 수 없습니다: {video_path}")
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise ValueError(f"영상을 열 수 없습니다: {video_path}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    log(f"영상: {video_path.name} ({total_frames} frames, {fps:.1f} fps)")
+    decoder = LTDecoder()
+    frames_processed = frames_with_qr = packets_received = 0
+    original_filename = ""
+    start_time = time.time()
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frames_processed += 1
+            payloads = decode_qr_from_frame(frame)
+            if payloads:
+                frames_with_qr += 1
+                for raw_payload in payloads:
+                    try:
+                        packet, filename = unpack_packet(raw_payload)
+                        decoder.add_packet(packet)
+                        packets_received += 1
+                        if filename and not original_filename:
+                            original_filename = filename
+                            log(f"원본 파일명 확인: {original_filename}")
+                    except (ValueError, struct.error):
+                        log(f"프레임 {frames_processed}: 손상된 QR 패킷 건너뜀")
+
+            target = decoder._total_k
+            if progress_callback:
+                progress_callback(packets_received, target, len(decoder._blocks), frames_processed)
+            if decoder.complete:
+                break
+    finally:
+        cap.release()
+
+    if not decoder.complete:
+        raise ValueError(
+            f"디코딩 불완전: {len(decoder._blocks)}/{decoder._total_k or '?'} 블록 복원, "
+            f"{packets_received}개 패킷 수신"
+        )
+
+    data = decoder.result()
+    resolved_output_path = resolve_output_path(output_path, original_filename)
+    resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_output_path.write_bytes(data)
+    expected_hash = decoder._file_hash or ""
+    actual_hash = sha256_file(resolved_output_path)
+    elapsed = time.time() - start_time
+    return DecodeResult(
+        output_path=resolved_output_path,
+        original_filename=original_filename,
+        packets_received=packets_received,
+        target_packets=decoder._total_k or 0,
+        frames_processed=frames_processed,
+        frames_with_qr=frames_with_qr,
+        expected_hash=expected_hash,
+        actual_hash=actual_hash,
+        hash_ok=actual_hash.lower() == expected_hash.lower(),
+        elapsed=elapsed,
+    )
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="QR Stream Transfer - receiver")
+    parser.add_argument("--video", required=True, help="촬영 영상 파일 경로 (mp4/mov)")
+    parser.add_argument(
+        "--output",
+        required=False,
+        default=None,
+        help="복원할 출력 파일 경로 또는 폴더 (생략 시 원본 파일명으로 현재 폴더에 복원)",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        result = decode_video(args.video, args.output, log_callback=print)
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"  ✗ {error}", file=sys.stderr)
+        return 1
+    print(f"  처리: {result.frames_processed} 프레임, {result.packets_received}개 패킷, {result.elapsed:.1f}s")
+    print(f"  원본 파일명: {result.original_filename or '(알 수 없음)'}")
+    print(f"  출력: {result.output_path}")
+    if not verify_and_report(result.output_path, result.expected_hash):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
