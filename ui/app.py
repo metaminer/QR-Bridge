@@ -62,4 +62,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Required when frozen (PyInstaller) on Windows: sender/display.py's
+    # SenderApp spins up a ProcessPoolExecutor for QR rendering. Windows
+    # multiprocessing has no fork(), so a worker process re-launches this
+    # same exe with a special marker; without freeze_support() called first,
+    # that re-launch doesn't recognize the marker and just runs main() again,
+    # popping up a whole new GUI window per worker instead of running the
+    # worker function. Must be the very first thing executed.
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     raise SystemExit(main())
