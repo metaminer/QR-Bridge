@@ -51,7 +51,6 @@ class SenderApp:
         fps: float,
         target_size: int = 760,
         progress_callback: Optional[Callable[[int, int], None]] = None,
-        start_delay_ms: int = 0,
         filename: str = "",
         cols: int = 1,
     ) -> None:
@@ -59,15 +58,12 @@ class SenderApp:
             raise ValueError("packet_count must be positive")
         if fps <= 0:
             raise ValueError("fps must be positive")
-        if start_delay_ms < 0:
-            raise ValueError("start_delay_ms must be non-negative")
         self.parent = parent
         self.encoder = encoder
         self.packet_count = packet_count
         self.fps = fps
         self.target_size = target_size
         self.progress_callback = progress_callback
-        self.start_delay_ms = start_delay_ms
         self.filename = filename
         self.cols = max(1, cols)
         self.rows = 2 if self.cols >= 5 else 1
@@ -79,7 +75,6 @@ class SenderApp:
         self._running = True
         self._after_id: str | None = None
         self._escape_binding: str | None = None
-        self._countdown_deadline: float | None = None
         self._executor: ProcessPoolExecutor | None = None
         self._render_futures: list[Future] = []
         self._render_indices: list[int] = []
@@ -140,13 +135,9 @@ class SenderApp:
         for tile in self._tiles:
             tile.bind("<Configure>", self._position_items, add="+")
         self._position_items()
-        if start_delay_ms:
-            self._countdown_deadline = time.monotonic() + start_delay_ms / 1000
-            self._update_countdown()
-        else:
-            for tile, overlay in zip(self._tiles, self._overlays):
-                tile.itemconfigure(overlay, text="QR 스트림 시작 중...")
-            self._after_id = self.canvas.after(10, self._play_step)
+        for tile, overlay in zip(self._tiles, self._overlays):
+            tile.itemconfigure(overlay, text="QR 스트림 시작 중...")
+        self._after_id = self.canvas.after(10, self._play_step)
 
     def _close_window(self, _event=None) -> None:
         self.stop()
@@ -191,21 +182,6 @@ class SenderApp:
             height = max(1, tile.winfo_height())
             tile.coords(image_item, width // 2, height // 2)
             tile.coords(overlay, width // 2, max(12, height - 18))
-
-    def _update_countdown(self) -> None:
-        if not self._running or self._countdown_deadline is None:
-            return
-        remaining = self._countdown_deadline - time.monotonic()
-        if remaining <= 0:
-            self._countdown_deadline = None
-            for tile, overlay in zip(self._tiles, self._overlays):
-                tile.itemconfigure(overlay, text="QR 스트림 시작 중...")
-            self._after_id = self.canvas.after(10, self._play_step)
-            return
-        message = f"{max(1, int(remaining + 0.999))}초 후 QR 전송을 시작합니다"
-        for tile, overlay in zip(self._tiles, self._overlays):
-            tile.itemconfigure(overlay, text=message)
-        self._after_id = self.canvas.after(100, self._update_countdown)
 
     def _fit_to_canvas(self, img: Image.Image, tile_index: int = 0) -> Image.Image:
         canvas = self._tiles[tile_index]

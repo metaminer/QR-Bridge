@@ -35,7 +35,6 @@ class _LabeledEntry(ttk.Frame):
 class SenderTab(ttk.Frame):
     """송신 탭: 파일 선택 -> LT 인코딩 -> QR 슬라이드쇼."""
 
-    START_DELAY_MS = 2000
     FHD_WIDTH = 1920
     FHD_HEIGHT = 1080
     WIDTH_USAGE = 0.98
@@ -263,13 +262,12 @@ class SenderTab(ttk.Frame):
             target_size=target_size,
             cols=cols,
             progress_callback=self._on_frame_displayed,
-            start_delay_ms=self.START_DELAY_MS,
             filename=filename,
         )
         rows = 2 if cols >= 5 else 1
         grid_cols = math.ceil(cols / rows)
         self._log(
-            f"[대기] {self.START_DELAY_MS / 1000:g}초 후 QR 전송 시작 · "
+            f"[시작] QR 전송 시작 · "
             f"{packet_count}개 패킷 · 프레임당 {cols}개 · "
             f"각 {self._auto_tile_size(cols)}px · {grid_cols}열×{rows}행 · {fps:.1f}fps"
         )
