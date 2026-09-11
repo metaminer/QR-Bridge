@@ -101,6 +101,7 @@ def decode_video(
     video_path: Path | str,
     output_path: Optional[Path | str] = None,
     *,
+    max_workers: int = 4,
     progress_callback: Optional[ProgressCallback] = None,
     log_callback: Optional[LogCallback] = None,
 ) -> DecodeResult:
@@ -109,9 +110,16 @@ def decode_video(
     *output_path* is optional — see the module docstring for how it is
     resolved against the original filename carried in the QR frames.
 
+    *max_workers* sizes the QR-decoding thread pool (see the comment below on
+    why threads, not processes). Default 4 matched the benchmark hardware
+    this was tuned on; faster/slower machines may benefit from a different
+    value.
+
     This function contains no tkinter calls, so a GUI can safely run it in a
     worker thread. Callbacks execute on that same worker thread.
     """
+    if max_workers <= 0:
+        raise ValueError("max_workers must be positive")
     from common.hash_verify import sha256_file
 
     video_path = Path(video_path)
@@ -155,13 +163,13 @@ def decode_video(
             return a.shape == b.shape and (a == b).all()
 
     try:
-        executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="qr-decode")
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="qr-decode")
     except (OSError, PermissionError):
         executor = None
 
     prev_frame = None          # 직전 프레임 (중복 스킵용)
     pending: list[Future] = []  # 제출돼 결과 미수집인 디코딩 작업
-    max_pending = 16           # 읽기-디코딩 파이프라인의 최대 백로그(4워커 x4)
+    max_pending = max_workers * 4  # 읽기-디코딩 파이프라인의 최대 백로그
 
     def _collect(futures_list: list[Future]) -> None:
         """수집된 future의 QR 패킷을 디코더에 투입. 완료 시 조기 반환."""
@@ -238,9 +246,19 @@ def decode_video(
         pending.clear()
         cap.release()
 
+    restored_blocks = len(decoder._blocks)
+    target_blocks = decoder._total_k or 0
+    restore_rate = (restored_blocks / target_blocks * 100) if target_blocks else 0.0
+
     if not decoder.complete:
+        log(
+            f"복원 실패 · 복원율 {restore_rate:.1f}% "
+            f"({restored_blocks}/{target_blocks or '?'} 블록) · "
+            f"수신 패킷 {packets_received} · "
+            f"프레임 {frames_with_qr}/{frames_processed}"
+        )
         raise ValueError(
-            f"디코딩 불완전: {len(decoder._blocks)}/{decoder._total_k or '?'} 블록 복원, "
+            f"디코딩 불완전: {restored_blocks}/{target_blocks or '?'} 블록 복원, "
             f"{packets_received}개 패킷 수신"
         )
 
@@ -251,6 +269,13 @@ def decode_video(
     expected_hash = decoder._file_hash or ""
     actual_hash = sha256_file(resolved_output_path)
     elapsed = time.time() - start_time
+    log(
+        f"복원 완료 · 복원율 {restore_rate:.1f}% "
+        f"({restored_blocks}/{target_blocks} 블록) · "
+        f"수신 패킷 {packets_received} · "
+        f"프레임 {frames_with_qr}/{frames_processed} · "
+        f"소요시간 {elapsed:.1f}초"
+    )
     return DecodeResult(
         output_path=resolved_output_path,
         original_filename=original_filename,
@@ -274,10 +299,21 @@ def main(argv=None) -> int:
         default=None,
         help="복원할 출력 파일 경로 또는 폴더 (생략 시 원본 파일명으로 현재 폴더에 복원)",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=4,
+        help="QR 디코딩 스레드 풀 크기 (기본 4)",
+    )
     args = parser.parse_args(argv)
+    if args.threads <= 0:
+        print("--threads는 양수여야 합니다", file=sys.stderr)
+        return 1
 
     try:
-        result = decode_video(args.video, args.output, log_callback=print)
+        result = decode_video(
+            args.video, args.output, max_workers=args.threads, log_callback=print
+        )
     except (OSError, RuntimeError, ValueError) as error:
         print(f"  ✗ {error}", file=sys.stderr)
         return 1

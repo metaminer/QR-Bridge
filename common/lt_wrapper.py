@@ -56,8 +56,19 @@ _MAX_PACKET_DEGREE = 65536
 
 
 def _xor_into(target: bytearray, source: bytes) -> None:
-    for index, value in enumerate(source):
-        target[index] ^= value
+    """XOR *source* into *target* in place using C-level big-int operations.
+
+    Encoder and decoder call sites always pass equal-sized blocks.  The
+    longer-source branch preserves the old loop's partial mutation followed
+    by ``IndexError`` for callers that violate that invariant.
+    """
+    length = len(target)
+    if len(source) > length:
+        result = int.from_bytes(target, "little") ^ int.from_bytes(source[:length], "little")
+        target[:] = result.to_bytes(length, "little")
+        raise IndexError("bytearray index out of range")
+    result = int.from_bytes(target, "little") ^ int.from_bytes(source, "little")
+    target[:] = result.to_bytes(length, "little")
 
 
 @lru_cache(maxsize=64)

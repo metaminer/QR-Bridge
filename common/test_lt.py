@@ -10,11 +10,51 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from common.hash_verify import sha256_bytes, verify_bytes
-from common.lt_wrapper import LTDecoder, LTEncoder, ProtocolLimits, decode
+from common.lt_wrapper import LTDecoder, LTEncoder, ProtocolLimits, _xor_into, decode
 
 
 class LTCodeTests(unittest.TestCase):
     DATA = bytes((index * 31 + 17) % 256 for index in range(48_137))
+
+    def test_xor_into_matches_bytewise_xor_for_multiple_lengths(self):
+        rng = random.Random(20260911)
+        for target_length, source_length in (
+            (0, 0),
+            (1, 1),
+            (7, 7),
+            (1024, 1024),
+            (7, 0),
+            (7, 3),
+        ):
+            with self.subTest(
+                target_length=target_length, source_length=source_length
+            ):
+                original = bytes(rng.randrange(256) for _ in range(target_length))
+                source = bytes(rng.randrange(256) for _ in range(source_length))
+                expected = bytearray(original)
+                for index, value in enumerate(source):
+                    expected[index] ^= value
+
+                actual = bytearray(original)
+                self.assertIsNone(_xor_into(actual, source))
+                self.assertEqual(actual, expected)
+
+    def test_xor_into_preserves_partial_mutation_when_source_is_longer(self):
+        target = bytearray(b"\x10\x20")
+
+        with self.assertRaises(IndexError):
+            _xor_into(target, b"\x01\x02\x03")
+
+        self.assertEqual(target, bytearray(b"\x11\x22"))
+
+    def test_xor_into_does_not_iterate_over_bytes_in_python(self):
+        class NonIterableBytes(bytes):
+            def __iter__(self):
+                raise AssertionError("source was iterated in Python")
+
+        target = bytearray(b"\x10\x20")
+        _xor_into(target, NonIterableBytes(b"\x01\x02"))
+        self.assertEqual(target, bytearray(b"\x11\x22"))
 
     def test_protocol_limits_match_android_defaults(self):
         limits = ProtocolLimits()

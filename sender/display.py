@@ -85,6 +85,7 @@ class SenderApp:
         self._render_started = 0.0
         self._qr_cache: OrderedDict[int, Image.Image] = OrderedDict()
         self._qr_cache_bytes = 0
+        self._overlay_cleared: list[bool] = [False] * self.cols
         if self.cols > 1:
             try:
                 self._executor = ProcessPoolExecutor(max_workers=self.cols)
@@ -228,10 +229,6 @@ class SenderApp:
             (self.play_index + tile_index) % self.packet_count
             for tile_index in range(self.cols)
         ]
-        payloads = [
-            pack_packet(self.encoder.packet(packet_index), self.filename)
-            for packet_index in packet_indices
-        ]
         step_started = time.perf_counter()
 
         cached_images = [self._qr_cache.get(index) for index in packet_indices]
@@ -244,6 +241,11 @@ class SenderApp:
                 step_started,
             )
             return
+
+        payloads = [
+            pack_packet(self.encoder.packet(packet_index), self.filename)
+            for packet_index in packet_indices
+        ]
 
         if self._executor is not None:
             try:
@@ -301,19 +303,23 @@ class SenderApp:
         displayed_loop = self.loop_count
         for tile_index, (packet_index, raw_image) in enumerate(zip(packet_indices, images)):
             self._cache_qr(packet_index, raw_image)
-            image = self._fit_to_canvas(
-                raw_image,
-                tile_index=tile_index,
-            )
-            photo = ImageTk.PhotoImage(image, master=self._tiles[tile_index])
-            self._current_images[tile_index] = photo
-            self._tiles[tile_index].itemconfigure(
-                self._image_items[tile_index], image=photo
-            )
-            self._tiles[tile_index].itemconfigure(
-                self._overlays[tile_index],
-                text="",
-            )
+            image = self._fit_to_canvas(raw_image, tile_index=tile_index)
+            tile = self._tiles[tile_index]
+            existing = self._current_images[tile_index]
+            if (
+                existing is not None
+                and existing.width() == image.width
+                and existing.height() == image.height
+            ):
+                existing.paste(image)
+                photo = existing
+            else:
+                photo = ImageTk.PhotoImage(image, master=tile)
+                self._current_images[tile_index] = photo
+                tile.itemconfigure(self._image_items[tile_index], image=photo)
+            if not self._overlay_cleared[tile_index]:
+                tile.itemconfigure(self._overlays[tile_index], text="")
+                self._overlay_cleared[tile_index] = True
         self._position_items()
         if self.progress_callback:
             self.progress_callback(self.play_index + 1, displayed_loop)
@@ -347,13 +353,15 @@ class SenderApp:
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="QR Stream Transfer - sender")
     parser.add_argument("--file", required=True, help="전송할 파일 경로")
-    parser.add_argument("--fps", type=float, default=15.0, help="슬라이드쇼 프레임 속도 (기본 15)")
+    parser.add_argument("--fps", type=float, default=60.0, help="슬라이드쇼 프레임 속도 (기본 60)")
     parser.add_argument("--redundancy", type=float, default=1.5, help="LT 패킷 중복률 (기본 1.5)")
     parser.add_argument("--chunk-size", type=int, default=1024, help="청크 크기 바이트 (기본 1024)")
     parser.add_argument("--seed", type=int, default=0, help="LT 인코딩 시드")
     parser.add_argument(
-        "--ec-level", choices=EC_LEVELS, default=DEFAULT_EC_LEVEL,
-        help=f"QR 오류 정정 레벨 (기본 {DEFAULT_EC_LEVEL}) — 낮을수록 QR이 작아져 모듈당 픽셀이 늘어난다",
+        "--cols",
+        type=int,
+        default=1,
+        help="화면 타일 개수 (기본 1, 최대 10 — 작을수록 각 타일이 큼)",
     )
     return parser.parse_args(argv)
 

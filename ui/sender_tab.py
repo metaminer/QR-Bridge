@@ -54,6 +54,7 @@ class SenderTab(ttk.Frame):
         self._progress_queue: "queue.Queue[Optional[float]]" = queue.Queue()
         self._sender_app: Optional[SenderApp] = None
         self._loop_started_at: Optional[float] = None
+        self._packet_count: int = 0
         self._log_history: list[str] = []
         self._log_window: Optional[tk.Toplevel] = None
         self._log_text: Optional[ScrolledText] = None
@@ -73,38 +74,46 @@ class SenderTab(ttk.Frame):
         ttk.Label(row, textvariable=self.file_label_var, anchor="w").grid(
             row=0, column=1, padx=(8, 12), sticky="ew"
         )
-        self.fps_entry = _LabeledEntry(row, "FPS:", "15", width=5)
+        self.fps_entry = _LabeledEntry(row, "FPS:", "60", width=5)
         self.fps_entry.grid(row=0, column=2, padx=(0, 10))
         self.redundancy_entry = _LabeledEntry(row, "중복도:", "1.5", width=5)
         self.redundancy_entry.grid(row=0, column=3, padx=(0, 10))
-        ttk.Label(row, text="동시 QR:").grid(row=0, column=4)
-        self.cols_var = tk.StringVar(value="1")
+        ttk.Label(row, text="청크:").grid(row=0, column=4)
+        self.chunk_size_var = tk.StringVar(value="1024")
+        self.chunk_size_combo = ttk.Combobox(
+            row, textvariable=self.chunk_size_var,
+            values=("1024", "1536"), width=5, state="readonly",
+        )
+        self.chunk_size_combo.grid(row=0, column=5, padx=(4, 10))
+        self.chunk_size_combo.bind("<<ComboboxSelected>>", self._update_auto_size_label)
+        ttk.Label(row, text="동시 QR:").grid(row=0, column=6)
+        self.cols_var = tk.StringVar(value="10")
         self.cols_combo = ttk.Combobox(
             row, textvariable=self.cols_var,
             values=tuple(str(value) for value in range(1, 11)),
             width=3, state="readonly",
         )
-        self.cols_combo.grid(row=0, column=5, padx=(4, 10))
+        self.cols_combo.grid(row=0, column=7, padx=(4, 10))
         self.cols_combo.bind("<<ComboboxSelected>>", self._update_auto_size_label)
-        ttk.Label(row, text="ECC:").grid(row=0, column=6)
+        ttk.Label(row, text="ECC:").grid(row=0, column=8)
         self.ec_level_var = tk.StringVar(value=DEFAULT_EC_LEVEL)
         self.ec_combo = ttk.Combobox(
             row, textvariable=self.ec_level_var, values=EC_LEVELS,
             width=3, state="readonly",
         )
-        self.ec_combo.grid(row=0, column=7, padx=(4, 10))
+        self.ec_combo.grid(row=0, column=9, padx=(4, 10))
         self.ec_combo.bind("<<ComboboxSelected>>", self._update_auto_size_label)
         self.auto_size_var = tk.StringVar()
-        ttk.Label(row, textvariable=self.auto_size_var).grid(row=0, column=8, padx=(0, 10))
+        ttk.Label(row, textvariable=self.auto_size_var).grid(row=0, column=10, padx=(0, 10))
         self.start_button = ttk.Button(row, text="시작", command=self._on_start)
-        self.start_button.grid(row=0, column=9)
+        self.start_button.grid(row=0, column=11)
         self.stop_button = ttk.Button(row, text="정지", command=self._on_stop, state="disabled")
-        self.stop_button.grid(row=0, column=10, padx=(6, 10))
+        self.stop_button.grid(row=0, column=12, padx=(6, 10))
         self.log_button = ttk.Button(row, text="로그 보기", command=self._show_log_popup)
-        self.log_button.grid(row=0, column=11, padx=(0, 10))
+        self.log_button.grid(row=0, column=13, padx=(0, 10))
         self.status_var = tk.StringVar(value="대기 중")
         ttk.Label(row, textvariable=self.status_var, anchor="e").grid(
-            row=0, column=12, sticky="e"
+            row=0, column=14, sticky="e"
         )
         row.columnconfigure(1, weight=1)
         self._update_auto_size_label()
@@ -133,7 +142,11 @@ class SenderTab(ttk.Frame):
         if self.file_path is None:
             return None
         try:
-            encoder, _ = build_encoder(bytes(4096), chunk_size=1024, redundancy=1.0, seed=0)
+            chunk_size = int(self.chunk_size_var.get())
+        except ValueError:
+            chunk_size = 1024
+        try:
+            encoder, _ = build_encoder(bytes(4096), chunk_size=chunk_size, redundancy=1.0, seed=0)
             payload = pack_packet(encoder.packet(0), self.file_path.name)
             return make_qr_image(
                 payload, box_size=1, ec_level=self.ec_level_var.get()
@@ -229,15 +242,16 @@ class SenderTab(ttk.Frame):
         try:
             fps        = float(self.fps_entry.get())
             redundancy = float(self.redundancy_entry.get())
+            chunk_size = int(self.chunk_size_var.get())
             cols       = int(self.cols_var.get())
             ec_level   = self.ec_level_var.get()
         except ValueError:
-            messagebox.showerror("입력 오류", "FPS/중복도/동시 QR 수를 숫자로 입력하세요.")
+            messagebox.showerror("입력 오류", "FPS/중복도/청크/동시 QR 수를 숫자로 입력하세요.")
             return
-        if fps <= 0 or redundancy < 1.0 or not 1 <= cols <= 10:
+        if fps <= 0 or redundancy < 1.0 or chunk_size <= 0 or not 1 <= cols <= 10:
             messagebox.showerror(
                 "입력 오류",
-                "FPS는 양수, 중복도는 1.0 이상, 동시 QR 수는 1~10이어야 합니다.",
+                "FPS는 양수, 중복도는 1.0 이상, 청크는 양수, 동시 QR 수는 1~10이어야 합니다.",
             )
             return
         tile_size = self._auto_tile_size(cols)
@@ -253,14 +267,14 @@ class SenderTab(ttk.Frame):
         self._show_encode_progress()
         self._log(
             f"[시작] {self.file_path.name} 인코딩 중... "
-            f"(redundancy={redundancy}, QR={cols}×{tile_size}px, "
+            f"(redundancy={redundancy}, 청크={chunk_size}, QR={cols}×{tile_size}px, "
             f"{fps:.1f}fps, 동시 QR={cols})"
         )
 
         self._worker = threading.Thread(
             target=self._encode_worker,
             args=(
-                self.file_path, redundancy, target_size, fps, cols, ec_level,
+                self.file_path, redundancy, chunk_size, target_size, fps, cols, ec_level,
                 run_generation,
             ),
             daemon=True,
@@ -280,8 +294,8 @@ class SenderTab(ttk.Frame):
     PROGRESS_LOG_STEP = 10  # one log line per 10% of the file scan
 
     def _encode_worker(
-        self, path: Path, redundancy: float, target_size: int, fps: float, cols: int,
-        ec_level: str, run_generation: int,
+        self, path: Path, redundancy: float, chunk_size: int, target_size: int, fps: float,
+        cols: int, ec_level: str, run_generation: int,
     ) -> None:
         """Scan the file and build only the encoder; packets stream on demand.
 
@@ -305,7 +319,7 @@ class SenderTab(ttk.Frame):
         try:
             encoder, packet_count = build_encoder(
                 path,
-                chunk_size=1024,
+                chunk_size=chunk_size,
                 redundancy=redundancy,
                 seed=0,
                 progress_callback=on_progress,
@@ -348,6 +362,7 @@ class SenderTab(ttk.Frame):
         self._hide_encode_progress()
         self._clear_qr_display(show_placeholder=False)
         self._loop_started_at = None
+        self._packet_count = packet_count
         filename = self.file_path.name if self.file_path is not None else ""
         self._sender_app = SenderApp(
             self._qr_container,
@@ -370,7 +385,13 @@ class SenderTab(ttk.Frame):
         )
 
     def _on_frame_displayed(self, frame_number: int, loop_number: int) -> None:
-        self.status_var.set(f"재생: frame {frame_number} · loop {loop_number}")
+        if self._packet_count > 0:
+            percent = frame_number * 100 // self._packet_count
+            self.status_var.set(
+                f"재생: frame {frame_number} · loop {loop_number} · {percent}%"
+            )
+        else:
+            self.status_var.set(f"재생: frame {frame_number} · loop {loop_number}")
         if frame_number == 1:
             now = time.perf_counter()
             if self._loop_started_at is not None:
@@ -432,9 +453,18 @@ class SenderTab(ttk.Frame):
         window = tk.Toplevel(self)
         window.title("QR 전송 로그")
         window.geometry("760x420")
-        window.minsize(520, 260)
+        window.minsize(520, 300)
         window.transient(self.winfo_toplevel())
         window.protocol("WM_DELETE_WINDOW", self._close_log_popup)
+
+        # Pack the button row first with side="bottom" so it always keeps its
+        # requested space even if the window is resized smaller than the log
+        # text's preferred height; otherwise the expanding text widget claims
+        # all the room first and can push the buttons out of view.
+        controls = ttk.Frame(window)
+        controls.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
+        ttk.Button(controls, text="로그 지우기", command=self._clear_log_history).pack(side="left")
+        ttk.Button(controls, text="닫기", command=self._close_log_popup).pack(side="right")
 
         text = ScrolledText(window, wrap="word", state="normal")
         text.pack(fill="both", expand=True, padx=8, pady=(8, 4))
@@ -442,11 +472,6 @@ class SenderTab(ttk.Frame):
             text.insert("end", "\n".join(self._log_history) + "\n")
             text.see("end")
         text.configure(state="disabled")
-
-        controls = ttk.Frame(window)
-        controls.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Button(controls, text="로그 지우기", command=self._clear_log_history).pack(side="left")
-        ttk.Button(controls, text="닫기", command=self._close_log_popup).pack(side="right")
         self._log_window = window
         self._log_text = text
 
