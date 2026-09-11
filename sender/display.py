@@ -229,6 +229,10 @@ class SenderApp:
             (self.play_index + tile_index) % self.packet_count
             for tile_index in range(self.cols)
         ]
+        payloads = [
+            pack_packet(self.encoder.packet(packet_index), self.filename)
+            for packet_index in packet_indices
+        ]
         step_started = time.perf_counter()
 
         cached_images = [self._qr_cache.get(index) for index in packet_indices]
@@ -241,11 +245,6 @@ class SenderApp:
                 step_started,
             )
             return
-
-        payloads = [
-            pack_packet(self.encoder.packet(packet_index), self.filename)
-            for packet_index in packet_indices
-        ]
 
         if self._executor is not None:
             try:

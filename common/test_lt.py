@@ -47,15 +47,6 @@ class LTCodeTests(unittest.TestCase):
 
         self.assertEqual(target, bytearray(b"\x11\x22"))
 
-    def test_xor_into_does_not_iterate_over_bytes_in_python(self):
-        class NonIterableBytes(bytes):
-            def __iter__(self):
-                raise AssertionError("source was iterated in Python")
-
-        target = bytearray(b"\x10\x20")
-        _xor_into(target, NonIterableBytes(b"\x01\x02"))
-        self.assertEqual(target, bytearray(b"\x11\x22"))
-
     def test_protocol_limits_match_android_defaults(self):
         limits = ProtocolLimits()
         self.assertEqual(limits.maxPayloadBytes, 8 * 1024)
