@@ -15,7 +15,8 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sender.encode import build_encoder
+from sender.encode import DEFAULT_EC_LEVEL, EC_LEVELS, build_encoder, make_qr_image
+from common.qr_wire import pack_packet
 from sender.display import SenderApp
 
 
@@ -83,17 +84,25 @@ class SenderTab(ttk.Frame):
         )
         self.cols_combo.grid(row=0, column=5, padx=(4, 10))
         self.cols_combo.bind("<<ComboboxSelected>>", self._update_auto_size_label)
+        ttk.Label(row, text="ECC:").grid(row=0, column=6)
+        self.ec_level_var = tk.StringVar(value=DEFAULT_EC_LEVEL)
+        self.ec_combo = ttk.Combobox(
+            row, textvariable=self.ec_level_var, values=EC_LEVELS,
+            width=3, state="readonly",
+        )
+        self.ec_combo.grid(row=0, column=7, padx=(4, 10))
+        self.ec_combo.bind("<<ComboboxSelected>>", self._update_auto_size_label)
         self.auto_size_var = tk.StringVar()
-        ttk.Label(row, textvariable=self.auto_size_var).grid(row=0, column=6, padx=(0, 10))
+        ttk.Label(row, textvariable=self.auto_size_var).grid(row=0, column=8, padx=(0, 10))
         self.start_button = ttk.Button(row, text="시작", command=self._on_start)
-        self.start_button.grid(row=0, column=7)
+        self.start_button.grid(row=0, column=9)
         self.stop_button = ttk.Button(row, text="정지", command=self._on_stop, state="disabled")
-        self.stop_button.grid(row=0, column=8, padx=(6, 10))
+        self.stop_button.grid(row=0, column=10, padx=(6, 10))
         self.log_button = ttk.Button(row, text="로그 보기", command=self._show_log_popup)
-        self.log_button.grid(row=0, column=9, padx=(0, 10))
+        self.log_button.grid(row=0, column=11, padx=(0, 10))
         self.status_var = tk.StringVar(value="대기 중")
         ttk.Label(row, textvariable=self.status_var, anchor="e").grid(
-            row=0, column=10, sticky="e"
+            row=0, column=12, sticky="e"
         )
         row.columnconfigure(1, weight=1)
         self._update_auto_size_label()
@@ -112,6 +121,24 @@ class SenderTab(ttk.Frame):
             tile_size = min(tile_size, 460)
         return max(140, tile_size)
 
+    def _qr_modules(self) -> int | None:
+        """Modules per side of a real frame at the current settings, or None.
+
+        Rendering one throwaway QR is the only honest way to get this: the
+        symbol version depends on the payload length, which depends on the
+        filename, and on the ECC level. Needs a selected file.
+        """
+        if self.file_path is None:
+            return None
+        try:
+            encoder, _ = build_encoder(bytes(4096), chunk_size=1024, redundancy=1.0, seed=0)
+            payload = pack_packet(encoder.packet(0), self.file_path.name)
+            return make_qr_image(
+                payload, box_size=1, ec_level=self.ec_level_var.get()
+            ).width
+        except Exception:
+            return None
+
     def _update_auto_size_label(self, _event=None) -> None:
         try:
             cols = max(1, int(self.cols_var.get()))
@@ -120,9 +147,14 @@ class SenderTab(ttk.Frame):
         tile_size = self._auto_tile_size(cols)
         rows = 2 if cols >= 5 else 1
         grid_cols = math.ceil(cols / rows)
-        self.auto_size_var.set(
-            f"자동 크기: 각 {tile_size}px · {grid_cols}열×{rows}행 · "
+        modules = self._qr_modules()
+        detail = (
             f"전체 {tile_size * grid_cols}×{tile_size * rows}px"
+            if modules is None
+            else f"{tile_size / modules:.2f}px/모듈"
+        )
+        self.auto_size_var.set(
+            f"자동 크기: 각 {tile_size}px · {grid_cols}열×{rows}행 · {detail}"
         )
 
     def _build_content_area(self) -> None:
@@ -170,6 +202,8 @@ class SenderTab(ttk.Frame):
             return
         self.file_path = Path(path)
         self.file_label_var.set(str(self.file_path))
+        # px/모듈은 파일명 길이에 따라 달라지므로 선택 직후 다시 계산한다.
+        self._update_auto_size_label()
 
     def _on_start(self) -> None:
         if self.file_path is None:
@@ -182,6 +216,7 @@ class SenderTab(ttk.Frame):
             fps        = float(self.fps_entry.get())
             redundancy = float(self.redundancy_entry.get())
             cols       = int(self.cols_var.get())
+            ec_level   = self.ec_level_var.get()
         except ValueError:
             messagebox.showerror("입력 오류", "FPS/중복도/동시 QR 수를 숫자로 입력하세요.")
             return
@@ -207,7 +242,7 @@ class SenderTab(ttk.Frame):
 
         self._worker = threading.Thread(
             target=self._encode_worker,
-            args=(self.file_path, redundancy, target_size, fps, cols),
+            args=(self.file_path, redundancy, target_size, fps, cols, ec_level),
             daemon=True,
         )
         self._worker.start()
@@ -221,7 +256,8 @@ class SenderTab(ttk.Frame):
     # --- background work (runs off the Tk main thread) ----------------------
 
     def _encode_worker(
-        self, path: Path, redundancy: float, target_size: int, fps: float, cols: int
+        self, path: Path, redundancy: float, target_size: int, fps: float, cols: int,
+        ec_level: str,
     ) -> None:
         """Read the file and build only the encoder; packets stream on demand."""
         try:
@@ -242,10 +278,14 @@ class SenderTab(ttk.Frame):
             f"(SHA-256 {encoder.file_hash[:16]}...)"
         )
         # SenderApp/Tkinter must be touched on the main thread only.
-        self.after(0, self._start_slideshow, encoder, packet_count, target_size, fps, cols)
+        self.after(
+            0, self._start_slideshow,
+            encoder, packet_count, target_size, fps, cols, ec_level,
+        )
 
     def _start_slideshow(
-        self, encoder, packet_count: int, target_size: int, fps: float, cols: int
+        self, encoder, packet_count: int, target_size: int, fps: float, cols: int,
+        ec_level: str,
     ) -> None:
         if self._cancel_event.is_set():
             self._reset_buttons()
@@ -263,13 +303,15 @@ class SenderTab(ttk.Frame):
             cols=cols,
             progress_callback=self._on_frame_displayed,
             filename=filename,
+            ec_level=ec_level,
         )
         rows = 2 if cols >= 5 else 1
         grid_cols = math.ceil(cols / rows)
         self._log(
             f"[시작] QR 전송 시작 · "
             f"{packet_count}개 패킷 · 프레임당 {cols}개 · "
-            f"각 {self._auto_tile_size(cols)}px · {grid_cols}열×{rows}행 · {fps:.1f}fps"
+            f"각 {self._auto_tile_size(cols)}px · {grid_cols}열×{rows}행 · "
+            f"{fps:.1f}fps · ECC {ec_level}"
         )
 
     def _on_frame_displayed(self, frame_number: int, loop_number: int) -> None:

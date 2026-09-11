@@ -56,25 +56,50 @@ class ProtocolGoldenTest {
     }
 
     @Test
-    fun `QRT2 parser matches every Python wire packet`() {
-        val parser = Qrt2PacketParser()
+    fun `QRT3 parser matches every Python wire packet`() {
+        val parser = QrtPacketParser()
         packets().forEach { expected ->
-            val parsed = parser.parseBase64Ascii(expected.wire)
-            assertEquals(expected.seq, parsed.seq)
-            assertEquals(expected.seed, parsed.seed)
-            assertEquals(expected.totalK, parsed.totalK)
-            assertEquals(expected.filename, parsed.filename)
-            assertContentEquals(expected.hash, parsed.fileHash)
-            assertContentEquals(expected.data, parsed.data)
+            assertPacketMatches(expected, parser.parse(expected.wire))
+        }
+    }
+
+    @Test
+    fun `QRT2 frames from the older sender still parse`() {
+        val parser = QrtPacketParser()
+        packets().forEach { expected ->
+            assertPacketMatches(expected, parser.parse(expected.legacyWire))
+        }
+    }
+
+    @Test
+    fun `QRT3 wire is materially smaller than QRT2`() {
+        packets().forEach { expected ->
+            assertTrue(
+                expected.wire.size < expected.legacyWire.size,
+                "QRT3 frame (${expected.wire.size}B) must be smaller than QRT2 (${expected.legacyWire.size}B)",
+            )
         }
     }
 
     @Test
     fun `malformed packets are rejected`() {
-        val parser = Qrt2PacketParser()
-        assertFailsWith<PacketFormatException> { parser.parseBase64Ascii("not base64".toByteArray()) }
-        val valid = packets().first().wire
-        assertFailsWith<PacketFormatException> { parser.parseBase64Ascii(valid.copyOf(12)) }
+        val parser = QrtPacketParser()
+        assertFailsWith<PacketFormatException> { parser.parse("not base64".toByteArray()) }
+        assertFailsWith<PacketFormatException> { parser.parse(ByteArray(0)) }
+        val valid = packets().first()
+        assertFailsWith<PacketFormatException> { parser.parse(valid.legacyWire.copyOf(12)) }
+        // A truncated QRT3 frame still carries the magic prefix, so it gets
+        // past format detection and has to be caught by the length checks.
+        assertFailsWith<PacketFormatException> { parser.parse(valid.wire.copyOf(12)) }
+    }
+
+    private fun assertPacketMatches(expected: FixturePacket, parsed: LtPacket) {
+        assertEquals(expected.seq, parsed.seq)
+        assertEquals(expected.seed, parsed.seed)
+        assertEquals(expected.totalK, parsed.totalK)
+        assertEquals(expected.filename, parsed.filename)
+        assertContentEquals(expected.hash, parsed.fileHash)
+        assertContentEquals(expected.data, parsed.data)
     }
 
     @Test
@@ -112,7 +137,9 @@ class ProtocolGoldenTest {
             FixturePacket(
                 seq = parts[0].toLong(), seed = parts[1].toLong(), totalK = parts[2].toInt(),
                 hash = parts[3].hexBytes(), filename = String(Base64.getDecoder().decode(parts[4]), Charsets.UTF_8),
-                data = Base64.getDecoder().decode(parts[5]), wire = parts[6].toByteArray(Charsets.US_ASCII),
+                data = Base64.getDecoder().decode(parts[5]),
+                wire = Base64.getDecoder().decode(parts[6]),
+                legacyWire = Base64.getDecoder().decode(parts[7]),
             )
         }
     }
@@ -120,6 +147,7 @@ class ProtocolGoldenTest {
     private data class FixturePacket(
         val seq: Long, val seed: Long, val totalK: Int, val hash: ByteArray,
         val filename: String, val data: ByteArray, val wire: ByteArray,
+        val legacyWire: ByteArray,
     ) {
         fun toLtPacket() = LtPacket(seq, seed, data, totalK, hash, filename)
     }

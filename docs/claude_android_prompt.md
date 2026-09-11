@@ -61,7 +61,7 @@ revert, overwrite하지 마세요.
      `fileHash: ByteArray`, `filename: String`
    - Python의 uint32 값을 부호 없이 보존할 것
 
-2. `Qrt2PacketParser`
+2. `QrtPacketParser`
    - QR scanner가 반환한 Base64 문자열 또는 ASCII bytes를 입력받음
    - Base64 해제 → XOR 화이트닝 해제 → big-endian QRT2 파싱
    - magic, 전체 길이, filename length, data length, UTF-8을 엄격히 검증

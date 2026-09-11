@@ -6,13 +6,13 @@
 QR 페이로드를 만들거나 읽는다. 두 곳에 같은 로직을 중복 구현하지 말 것 — 과거에
 송신측만 화이트닝을 적용하고 수신측이 이를 반영하지 못해 전체 디코딩이 깨진 적이 있다.
 
-## 바이너리 레이아웃 (QRT2, big-endian)
+## 바이너리 레이아웃 (QRT3, big-endian)
 
 `">4sIII32sH"` (고정부) + 가변 `filename` + `">H"`(data_len) + 가변 `data`:
 
 | 필드 | 타입 | 크기 | 설명 |
 |------|------|------|------|
-| magic | bytes | 4 | 고정값 `b"QRT2"` — 포맷 식별/버전 태그 |
+| magic | bytes | 4 | 고정값 `b"QRT3"` — 포맷 식별/버전 태그 |
 | seq | uint32 | 4 | 패킷 시퀀스 번호 (`common.lt_wrapper.Packet["seq"]`) |
 | seed | uint32 | 4 | LT 블록 선택 시드 (`common.lt_wrapper.Packet["seed"]`) |
 | total_k | uint32 | 4 | 원본 블록(청크) 총 개수 (`common.lt_wrapper.Packet["total_k"]`) |
@@ -23,8 +23,8 @@ QR 페이로드를 만들거나 읽는다. 두 곳에 같은 로직을 중복 �
 | data | bytes | data_len | XOR 결합된 청크 데이터 (`common.lt_wrapper.Packet["data"]`), 기본 최대 1024 |
 
 고정 헤더(magic~filename_len) = 50 bytes. 기본 청크 크기(1024) 기준, 파일명이 짧으면
-(예: 20바이트) 프레임당 전체 페이로드는 대략 1096 bytes로, QR ECC 레벨 M에서 여유
-있게 인코딩된다(바이너리 모드 한계 ≈2.9KB).
+(예: 20바이트) 프레임당 전체 페이로드는 대략 1096 bytes다(QR 바이너리 모드 한계 ≈2.9KB).
+QRT2는 여기에 base64를 씌워 1464 bytes였다 — QRT3는 그 33% 팽창을 걷어냈다.
 
 **설계 이유**: 원본 파일명은 LT 페이로드(`LTEncoder`가 감싸는 `data`) 안이 아니라 QR
 프레임 헤더 쪽에 둔다. 그래야:
@@ -37,7 +37,32 @@ QR 페이로드를 만들거나 읽는다. 두 곳에 같은 로직을 중복 �
    살아남아도 파일명을 복원할 수 있다 — LT 데이터와 동일한 손실 내성을 가진다.
 
 **버전 태그**: `QRT1`(파일명 필드 없음)은 더 이상 지원하지 않는다. `unpack_packet()`은
-`magic != b"QRT2"`이면 `ValueError`를 던진다.
+`magic`이 `b"QRT3"`도 `b"QRT2"`도 아니면 `ValueError`를 던진다.
+
+## base64 제거 (QRT2 → QRT3)
+
+QRT2는 화이트닝한 바이트를 **base64로 감싼 뒤** QR에 넣었다. pyzbar/zbar가 바이너리
+모드 QR에서 0x80 이상 바이트를 Latin-1 → UTF-8로 재해석해 버리기 때문이다(0x99가
+0xC2 0x99 두 바이트로 돌아와 이후 전체가 어긋난다). 실측으로 100% 재현됐던 문제다.
+
+지금은 송수신 양쪽 모두 **zxing-cpp**를 쓰고 Android는 ML Kit를 쓴다. 둘 다 바이너리
+모드 페이로드를 그대로 돌려준다 — 실제 QR 인코드 → 디코드 왕복으로 확인했다. 그래서
+QRT3는 화이트닝한 바이트를 **그대로** QR에 넣는다.
+
+효과(청크 1024, 파일명 10바이트 기준, 조용한 영역 포함 모듈 수):
+
+| 구성 | 페이로드 | ECC L | ECC M | ECC Q |
+|------|---------|-------|-------|-------|
+| QRT2 (base64) | 1448 B | 133 | 149 | 177 |
+| QRT3 (바이너리) | 1086 B | **117** | **133** | 153 |
+
+모듈 수가 줄면 화면 타일 크기가 같아도 **모듈당 카메라 픽셀이 늘어난다** — 촬영본
+인식률을 직접 끌어올리는 유일한 축이다.
+
+**하위 호환**: `unpack_packet()`과 Android의 `QrtPacketParser.parse()`는 두 포맷을 모두
+읽는다. 화이트닝 키스트림이 고정이라 QRT3 프레임은 항상 같은 4바이트로 시작하고,
+QRT2 프레임은 base64 ASCII라 그 값으로 시작할 수 없다. 이 접두사만으로 포맷을
+구분하므로 화이트닝을 풀기 전에 판별이 끝난다. 반대로 **송신은 QRT3만** 한다.
 
 ## XOR 화이트닝 (중요 — `common/qr_wire.py`가 자동으로 처리)
 
@@ -74,7 +99,11 @@ struct나 화이트닝 로직을 직접 구현하지 않는다.
    감싸고, `(encoder, packets, filename)`을 반환한다(`filename`은 `Path(path).name`).
 2. 전송 프레임 수 = `max(total_k, ceil(total_k * redundancy))` (`redundancy` 기본 1.5).
 3. `seq = 0..count-1` 각각에 대해 `encoder.packet(seq)` → `common.qr_wire.pack_packet(packet, filename)`로
-   직렬화(화이트닝 포함) → `sender/encode.make_qr_image()`(`qrcode`, ECC=M)로 QR 이미지 생성.
+   직렬화(화이트닝 포함) → `sender/encode.make_qr_image()`(`zxing-cpp`)로 QR 이미지 생성.
+   ECC 레벨은 `ec_level` 인자로 정하며 기본값은 `M`(`sender.encode.DEFAULT_EC_LEVEL`),
+   UI 툴바와 `--ec-level`로 L/M/Q를 고를 수 있다. LT 파운틴 코드가 깔려 있어 읽히지
+   않는 프레임 하나는 전송 실패가 아니라 프레임 하나의 손실이므로, 낮은 ECC로 심볼을
+   줄여 모듈당 픽셀을 버는 쪽이 유리할 수 있다 — 실촬영본으로 비교해 정할 값이다.
 4. `sender/display.SenderApp`(생성자 `filename=` 인자로 받음)이 정사각형 캔버스에 맞춰
    리사이즈(`NEAREST`, 블러 방지)한 프레임을 `--fps` 간격으로 순환 표시하며, 하단에
    진행률 오버레이(`frame i/count | loop n | fps`)를 표시한다. 마지막 프레임 이후에는

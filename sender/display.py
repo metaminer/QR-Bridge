@@ -28,14 +28,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PIL import Image, ImageTk
 
-from sender.encode import build_encoder, make_qr_image
+from sender.encode import DEFAULT_EC_LEVEL, EC_LEVELS, build_encoder, make_qr_image
 from common.lt_wrapper import LTEncoder
 from common.qr_wire import pack_packet
 
 
-def _make_compact_qr(payload: bytes) -> Image.Image:
+def _make_compact_qr(payload: bytes, ec_level: str = DEFAULT_EC_LEVEL) -> Image.Image:
     """Render a QR matrix in compact 1-bit form for workers and the cache."""
-    return make_qr_image(payload, box_size=1).convert("1")
+    return make_qr_image(payload, box_size=1, ec_level=ec_level).convert("1")
 
 
 class SenderApp:
@@ -53,11 +53,14 @@ class SenderApp:
         progress_callback: Optional[Callable[[int, int], None]] = None,
         filename: str = "",
         cols: int = 1,
+        ec_level: str = DEFAULT_EC_LEVEL,
     ) -> None:
         if packet_count <= 0:
             raise ValueError("packet_count must be positive")
         if fps <= 0:
             raise ValueError("fps must be positive")
+        if ec_level not in EC_LEVELS:
+            raise ValueError(f"ec_level must be one of {EC_LEVELS}, got {ec_level!r}")
         self.parent = parent
         self.encoder = encoder
         self.packet_count = packet_count
@@ -65,6 +68,7 @@ class SenderApp:
         self.target_size = target_size
         self.progress_callback = progress_callback
         self.filename = filename
+        self.ec_level = ec_level
         self.cols = max(1, cols)
         self.rows = 2 if self.cols >= 5 else 1
         self.grid_cols = math.ceil(self.cols / self.rows)
@@ -223,7 +227,7 @@ class SenderApp:
                 self._render_indices = packet_indices
                 self._render_started = step_started
                 self._render_futures = [
-                    self._executor.submit(_make_compact_qr, payload)
+                    self._executor.submit(_make_compact_qr, payload, self.ec_level)
                     for payload in payloads
                 ]
                 self._after_id = self.canvas.after(2, self._poll_render_batch)
@@ -233,7 +237,7 @@ class SenderApp:
                 self._executor = None
                 self._render_futures.clear()
 
-        images = [_make_compact_qr(payload) for payload in payloads]
+        images = [_make_compact_qr(payload, self.ec_level) for payload in payloads]
         self._display_rendered_batch(images, packet_indices, step_started)
 
     def _poll_render_batch(self) -> None:
@@ -252,7 +256,8 @@ class SenderApp:
                 self._executor = None
             images = [
                 _make_compact_qr(
-                    pack_packet(self.encoder.packet(packet_index), self.filename)
+                    pack_packet(self.encoder.packet(packet_index), self.filename),
+                    self.ec_level,
                 )
                 for packet_index in self._render_indices
             ]
@@ -323,6 +328,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--redundancy", type=float, default=1.5, help="LT 패킷 중복률 (기본 1.5)")
     parser.add_argument("--chunk-size", type=int, default=1024, help="청크 크기 바이트 (기본 1024)")
     parser.add_argument("--seed", type=int, default=0, help="LT 인코딩 시드")
+    parser.add_argument(
+        "--ec-level", choices=EC_LEVELS, default=DEFAULT_EC_LEVEL,
+        help=f"QR 오류 정정 레벨 (기본 {DEFAULT_EC_LEVEL}) — 낮을수록 QR이 작아져 모듈당 픽셀이 늘어난다",
+    )
     return parser.parse_args(argv)
 
 
@@ -353,7 +362,10 @@ def main(argv=None) -> int:
     root = tk.Tk()
     root.title(f"QR Stream Transfer - {path.name}")
     root.resizable(False, False)
-    SenderApp(root, encoder, packet_count, args.fps, filename=path.name)
+    SenderApp(
+        root, encoder, packet_count, args.fps,
+        filename=path.name, ec_level=args.ec_level,
+    )
     root.mainloop()
     return 0
 

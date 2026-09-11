@@ -60,7 +60,7 @@ Compose UI
       └─ ValidationCoordinator
           ├─ VideoFrameDecoder       MediaExtractor + MediaCodec
           ├─ MultiQrScanner          ML Kit, QR 전용
-          ├─ Qrt2PacketParser        Base64/화이트닝/헤더 검증
+          ├─ QrtPacketParser         QRT3/QRT2 판별·화이트닝·헤더 검증
           ├─ LtDecoder               Soliton + peeling/BP 복원
           ├─ PythonRandomCompat      현재 Python 송신기와 난수열 호환
           └─ Sha256Verifier          최종 무결성 검증
@@ -100,20 +100,26 @@ ML Kit 결과에서 한 프레임의 모든 QR을 수집한다. 각 QR은 독립
 QR 개수를 사용자가 미리 지정하지 않아도 동작하게 하되, 자동 검출이 불안정한 영상에는
 `1~8개 레이아웃` 수동 선택을 고급 옵션으로 제공한다.
 
-## 5. QRT2 및 LT 호환성
+## 5. QRT3/QRT2 및 LT 호환성
 
-Android 앱은 현재 PC 송신기가 만드는 QRT2를 그대로 읽어야 한다.
+Android 앱은 PC 송신기가 만드는 QRT3를 읽고, 이전 버전으로 촬영한 영상을 위해 QRT2도
+계속 읽는다.
 
 ```text
-Base64 decode
+포맷 판별 (QRT3 = 고정 화이트닝 매직 접두사, 아니면 QRT2 → Base64 decode)
   → 고정 키스트림 XOR 화이트닝 해제
-  → big-endian QRT2 헤더 파싱
+  → big-endian 헤더 파싱 (magic은 QRT3/QRT2 모두 허용)
   → 패킷/스트림 일관성 검사
   → LT 디코더에 추가
 ```
 
-QRT2 필드는 `seq`, `seed`, `total_k`, raw 32-byte `file_hash`, UTF-8 파일명,
-`data`이며 자세한 바이트 배열은 `docs/packet_spec.md`를 단일 명세로 사용한다.
+QRT3 프레임은 바이너리라 **ML Kit의 `Barcode.rawBytes`로만** 온전히 받을 수 있다.
+`rawValue`는 ML Kit가 바이트에서 디코딩한 String이라 비텍스트 페이로드에서 손실이
+발생하므로, `MultiQrScanner`는 `rawBytes`를 우선하고 `rawValue`는 ASCII로만 이루어진
+QRT2 프레임에 한해 대체 경로로 쓴다.
+
+필드는 `seq`, `seed`, `total_k`, raw 32-byte `file_hash`, UTF-8 파일명, `data`이며
+자세한 바이트 배열은 `docs/packet_spec.md`를 단일 명세로 사용한다.
 
 현재 프로토콜에는 언어 이식 시 주의할 점이 있다. 화이트닝과 LT parity 블록 선택이
 Python `random.Random`의 결과에 의존한다. Kotlin의 일반 난수 생성기를 사용하면 같은
@@ -128,7 +134,8 @@ Python `random.Random`의 결과에 의존한다. Kotlin의 일반 난수 생성
 
 이 부분은 추측으로 이식하지 않고 Python 코드에서 생성한 골든 벡터로 바이트 단위 검증한다.
 장기적으로는 Python 구현 세부사항에 의존하지 않는 고정 PRNG와 명확한 정수 연산 규칙을
-QRT3에 정의하는 것이 안전하다. QRT3 도입 시 QRT2 읽기 호환은 유지한다.
+정의하는 것이 안전하다. QRT3는 base64만 걷어낸 것이라 이 PRNG 의존성은 그대로 남아
+있다 — 별도 과제다.
 
 ### 스트림 일관성과 입력 제한
 
@@ -173,7 +180,7 @@ sealed interface ValidationState {
 
 ### JVM 단위 테스트
 
-- QRT2 헤더/파일명/data 파싱과 잘린 패킷 거부
+- QRT3/QRT2 헤더/파일명/data 파싱과 잘린 패킷 거부
 - 화이트닝 전후 Python 골든 벡터 일치
 - Python `getrandbits`, `random`, `sample` 시퀀스 일치
 - robust Soliton degree 및 선택 인덱스 일치
@@ -195,7 +202,7 @@ sealed interface ValidationState {
 ## 8. 구현 순서
 
 1. `android-validator/` Gradle 프로젝트와 Compose 기본 화면 구성
-2. QRT2 파서, Python 호환 난수기, LT 디코더 및 골든 벡터 테스트
+2. QRT3/QRT2 파서, Python 호환 난수기, LT 디코더 및 골든 벡터 테스트
 3. 영상 선택과 `MediaExtractor`/`MediaCodec` 순차 프레임 공급기
 4. ML Kit 다중 QR 인식과 중복 제거
 5. 전체 검증 파이프라인, 진행/취소/결과 화면 연결
@@ -210,7 +217,7 @@ VideoCapture, ImageAnalysis 동시 조합의 지원 해상도가 제각각이고
 ## 9. 완료 기준
 
 - 비행기 모드에서도 설치된 앱으로 검증할 수 있다.
-- 현재 Python 송신기의 QRT2 영상을 Android에서 복원하고 SHA-256 일치를 표시한다.
+- 현재 Python 송신기의 QRT3 영상을 Android에서 복원하고 SHA-256 일치를 표시한다.
 - 한 프레임에 1~8개 QR이 있어도 모두 수집한다.
 - 성공 시 영상 끝까지 기다리지 않고 종료한다.
 - 실패 시 재촬영 여부를 사용자가 명확히 판단할 수 있다.

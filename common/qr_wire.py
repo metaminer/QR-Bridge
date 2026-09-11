@@ -4,6 +4,10 @@ See docs/packet_spec.md for the full spec. This module is the single source of
 truth for both sides so the two can never drift out of sync (they did once:
 the sender whitened payloads before encoding but the receiver didn't reverse
 it, which broke every decode).
+
+QRT3 puts the whitened bytes straight into the QR code. QRT2 base64-encoded
+them first; ``unpack_packet`` still reads those, so a receiver on this version
+can decode video captured from an older sender.
 """
 
 from __future__ import annotations
@@ -16,10 +20,13 @@ from typing import Tuple
 
 from common.lt_wrapper import Packet
 
-# QRT2 adds the filename field (QRT1 packets had no filename and are no
-# longer accepted). The original filename is repeated in every frame — not
+# QRT3 drops QRT2's base64 armour and stores the whitened bytes raw (see
+# pack_packet). The layout behind the magic is otherwise identical, so one
+# parser reads both. The original filename is repeated in every frame — not
 # just packet 0 — so it survives frame loss the same way the LT data does.
-MAGIC = b"QRT2"
+# QRT1 (no filename field) is not accepted.
+MAGIC = b"QRT3"
+LEGACY_MAGIC = b"QRT2"
 # big-endian: magic(4s), seq(I), seed(I), total_k(I), file_hash(32s raw), filename_len(H)
 _HEADER1 = struct.Struct(">4sIII32sH")
 # big-endian: data_len(H) — follows the variable-length filename bytes
@@ -45,19 +52,26 @@ def whiten(payload: bytes) -> bytes:
     return bytes(a ^ b for a, b in zip(payload, stream))
 
 
-def pack_packet(packet: Packet, filename: str = "") -> bytes:
-    """Serialize an LT packet dict + original filename into a QR-safe payload.
+# The keystream is a prefix of one deterministic sequence, so a whitened
+# payload always starts with the same 4 bytes for a given magic. That makes
+# the format self-identifying without un-whitening first: QRT3 frames start
+# with these bytes, QRT2 frames start with base64 ASCII.
+_WHITENED_MAGIC = whiten(MAGIC)
 
-    The whitened bytes are base64-encoded before they go into the QR code.
-    This is not optional: raw binary QR payloads containing bytes >= 0x80 get
-    silently corrupted by pyzbar/zbar's decode path, which appears to run
-    byte-mode QR data through a Latin-1 -> UTF-8 transcode step. A byte like
-    0x99 comes back as the two bytes 0xC2 0x99 (the UTF-8 encoding of U+0099),
-    desyncing every following byte in the packet. This was confirmed with a
-    direct qrcode-encode -> pyzbar-decode round trip: it corrupted 100% of
-    payloads containing high-bit bytes, at every size tested, regardless of
-    the XOR whitening above. Base64 keeps the QR payload pure 7-bit ASCII, so
-    zbar has nothing to "reinterpret" and the bytes come back unchanged.
+
+def pack_packet(packet: Packet, filename: str = "") -> bytes:
+    """Serialize an LT packet dict + original filename into a QR payload (QRT3).
+
+    The whitened bytes go into the QR code as-is, in byte mode. QRT2 wrapped
+    them in base64 first, because pyzbar/zbar silently corrupts byte-mode QR
+    data containing bytes >= 0x80: its decode path appears to run them through
+    a Latin-1 -> UTF-8 transcode, so a byte like 0x99 comes back as 0xC2 0x99
+    and desyncs everything after it. Both sides now use zxing-cpp (and ML Kit
+    on Android), which return byte-mode payloads unchanged — verified with a
+    real encode -> decode round trip over these exact packets. Dropping the
+    armour cuts the payload by a quarter (1448 -> 1086 bytes at chunk_size
+    1024), which shrinks the QR from 149 to 133 modules at ECC M: the camera
+    gets ~12% more pixels per module for the same tile size on screen.
     """
     file_hash = bytes.fromhex(str(packet["file_hash"]))
     data = packet["data"]
@@ -69,21 +83,16 @@ def pack_packet(packet: Packet, filename: str = "") -> bytes:
         MAGIC, packet["seq"], packet["seed"], packet["total_k"], file_hash, len(name_bytes)
     )
     header2 = _HEADER2.pack(len(data))
-    whitened = whiten(header1 + name_bytes + header2 + data)
-    return base64.b64encode(whitened)
+    return whiten(header1 + name_bytes + header2 + data)
 
 
 def unpack_packet(raw_payload: bytes) -> Tuple[Packet, str]:
-    """Reverse base64 + whitening and parse a QR-decoded payload into (packet, filename)."""
-    try:
-        whitened = base64.b64decode(raw_payload, validate=True)
-    except (ValueError, base64.binascii.Error) as exc:
-        raise ValueError("payload is not valid base64") from exc
-    payload = whiten(whitened)
+    """Parse a QR-decoded payload into (packet, filename). Reads QRT3 and QRT2."""
+    payload = whiten(_strip_armour(raw_payload))
     if len(payload) < _HEADER1.size:
         raise ValueError("payload too short")
     magic, seq, seed, total_k, file_hash, name_len = _HEADER1.unpack_from(payload)
-    if magic != MAGIC:
+    if magic not in (MAGIC, LEGACY_MAGIC):
         raise ValueError(f"unknown packet magic: {magic!r}")
     offset = _HEADER1.size
     name_bytes = payload[offset : offset + name_len]
@@ -109,3 +118,17 @@ def unpack_packet(raw_payload: bytes) -> Tuple[Packet, str]:
         "file_hash": file_hash.hex(),
     }
     return packet, filename
+
+
+def _strip_armour(raw_payload: bytes) -> bytes:
+    """Return the whitened bytes, undoing QRT2's base64 layer if present.
+
+    A QRT3 frame starts with the fixed whitened magic; a QRT2 frame is base64
+    ASCII and cannot, so the prefix alone tells the two apart.
+    """
+    if raw_payload[: len(_WHITENED_MAGIC)] == _WHITENED_MAGIC:
+        return raw_payload
+    try:
+        return base64.b64decode(raw_payload, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("payload is neither a QRT3 frame nor valid base64") from exc

@@ -9,27 +9,57 @@ import java.util.Base64
 
 class PacketFormatException(message: String, cause: Throwable? = null) : IllegalArgumentException(message, cause)
 
-class Qrt2PacketParser(private val limits: ProtocolLimits = ProtocolLimits()) {
-    fun parseBase64Ascii(payload: ByteArray): LtPacket {
-        if (payload.isEmpty() || payload.size > limits.maxBase64PayloadBytes) {
+/**
+ * Parses one QR frame's payload into an [LtPacket].
+ *
+ * QRT3 frames carry the whitened bytes raw; QRT2 frames wrapped them in
+ * base64 first. Both are accepted, so a build of this app can validate video
+ * captured from either sender. The layout behind the magic is identical —
+ * see docs/packet_spec.md.
+ */
+class QrtPacketParser(private val limits: ProtocolLimits = ProtocolLimits()) {
+    /** Parse a QR payload of either wire version, detecting which it is. */
+    fun parse(payload: ByteArray): LtPacket {
+        if (payload.isEmpty() || payload.size > limits.maxPayloadBytes) {
             throw PacketFormatException("QR payload size is outside allowed range")
         }
-        val whitened = try {
+        return parseDecoded(unwhiten(stripArmour(payload)))
+    }
+
+    /**
+     * QRT3 payloads start with the fixed whitened magic. A QRT2 payload is
+     * base64 ASCII and cannot begin with those bytes, so the prefix alone
+     * separates the two without having to un-whiten first.
+     */
+    private fun stripArmour(payload: ByteArray): ByteArray {
+        if (payload.size >= WHITENED_MAGIC.size &&
+            payload.copyOf(WHITENED_MAGIC.size).contentEquals(WHITENED_MAGIC)
+        ) {
+            return payload
+        }
+        return try {
             Base64.getDecoder().decode(payload)
         } catch (error: IllegalArgumentException) {
-            throw PacketFormatException("payload is not valid base64", error)
+            throw PacketFormatException("payload is neither a QRT3 frame nor valid base64", error)
         }
+    }
+
+    private fun unwhiten(whitened: ByteArray): ByteArray {
         val decoded = whitened.copyOf()
         val random = PythonRandomCompat(WHITENING_SEED)
-        for (index in decoded.indices) decoded[index] = (decoded[index].toInt() xor random.getRandBits(8).toInt()).toByte()
-        return parseDecoded(decoded)
+        for (index in decoded.indices) {
+            decoded[index] = (decoded[index].toInt() xor random.getRandBits(8).toInt()).toByte()
+        }
+        return decoded
     }
 
     private fun parseDecoded(payload: ByteArray): LtPacket {
         if (payload.size < FIXED_HEADER_SIZE) throw PacketFormatException("payload too short")
         val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
         val magic = ByteArray(4).also(buffer::get)
-        if (!magic.contentEquals(MAGIC)) throw PacketFormatException("unknown packet magic")
+        if (!magic.contentEquals(MAGIC) && !magic.contentEquals(LEGACY_MAGIC)) {
+            throw PacketFormatException("unknown packet magic")
+        }
         val seq = buffer.int.toLong() and 0xffff_ffffL
         val seed = buffer.int.toLong() and 0xffff_ffffL
         val totalKLong = buffer.int.toLong() and 0xffff_ffffL
@@ -57,9 +87,15 @@ class Qrt2PacketParser(private val limits: ProtocolLimits = ProtocolLimits()) {
     }
 
     companion object {
-        private val MAGIC = "QRT2".toByteArray(StandardCharsets.US_ASCII)
+        private val MAGIC = "QRT3".toByteArray(StandardCharsets.US_ASCII)
+        private val LEGACY_MAGIC = "QRT2".toByteArray(StandardCharsets.US_ASCII)
         private const val FIXED_HEADER_SIZE = 50
         private const val WHITENING_SEED = 0x51515151L
+
+        /** [MAGIC] run through the whitening keystream — the QRT3 frame prefix. */
+        private val WHITENED_MAGIC: ByteArray = run {
+            val random = PythonRandomCompat(WHITENING_SEED)
+            ByteArray(MAGIC.size) { index -> (MAGIC[index].toInt() xor random.getRandBits(8).toInt()).toByte() }
+        }
     }
 }
-

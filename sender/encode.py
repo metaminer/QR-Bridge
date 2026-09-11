@@ -49,8 +49,24 @@ def encode_file(
     return encoder, packets, path.name
 
 
-def make_qr_image(payload: bytes, box_size: int = 8, border: int = 4) -> Image.Image:
-    """Render *payload* as a QR code image.
+# Reed-Solomon overhead per level. Lower ECC means a smaller symbol for the
+# same payload, which means more camera pixels per module — and with an LT
+# fountain code underneath, a frame the camera cannot read costs one frame,
+# not the transfer, so the usual reason to buy heavy ECC is already covered.
+# Measured module counts for a chunk_size=1024 QRT3 frame (incl. quiet zone):
+# L 117, M 133, Q 153. Which level actually wins depends on the capture —
+# smaller symbol versus less correction — so it is a knob, not a constant.
+EC_LEVELS = ("L", "M", "Q")
+DEFAULT_EC_LEVEL = "M"
+
+
+def make_qr_image(
+    payload: bytes,
+    box_size: int = 8,
+    border: int = 4,
+    ec_level: str = DEFAULT_EC_LEVEL,
+) -> Image.Image:
+    """Render *payload* as a QR code image at error-correction *ec_level*.
 
     Uses ``zxing-cpp`` (native C++ ZXing bindings, prebuilt Windows wheel, no
     extra runtime dependency) instead of the pure-Python ``segno``/``qrcode``:
@@ -58,7 +74,11 @@ def make_qr_image(payload: bytes, box_size: int = 8, border: int = 4) -> Image.I
     ~203ms (~42x), verified correct via a real QR-image -> pyzbar decode
     round trip. See docs/packet_spec.md for the full benchmark writeup.
     """
-    barcode = zxingcpp.create_barcode(payload, zxingcpp.BarcodeFormat.QRCode, ecLevel="M")
+    if ec_level not in EC_LEVELS:
+        raise ValueError(f"ec_level must be one of {EC_LEVELS}, got {ec_level!r}")
+    barcode = zxingcpp.create_barcode(
+        payload, zxingcpp.BarcodeFormat.QRCode, ecLevel=ec_level
+    )
     if not barcode.valid:
         raise ValueError("zxing-cpp failed to encode this payload as a QR code")
     if border == 4:
@@ -83,7 +103,9 @@ def make_qr_image(payload: bytes, box_size: int = 8, border: int = 4) -> Image.I
     return img
 
 
-def make_frame_image(encoder: LTEncoder, seq: int, filename: str = "") -> Image.Image:
+def make_frame_image(
+    encoder: LTEncoder, seq: int, filename: str = "", ec_level: str = DEFAULT_EC_LEVEL
+) -> Image.Image:
     """Build packet *seq* and render it straight to a QR image."""
     packet = encoder.packet(seq)
-    return make_qr_image(pack_packet(packet, filename))
+    return make_qr_image(pack_packet(packet, filename), ec_level=ec_level)

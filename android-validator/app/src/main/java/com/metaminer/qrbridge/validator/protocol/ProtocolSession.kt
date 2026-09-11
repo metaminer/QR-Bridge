@@ -3,7 +3,7 @@ package com.metaminer.qrbridge.validator.protocol
 import com.metaminer.qrbridge.protocol.AddPacketResult
 import com.metaminer.qrbridge.protocol.LtDecoder
 import com.metaminer.qrbridge.protocol.PacketFormatException
-import com.metaminer.qrbridge.protocol.Qrt2PacketParser
+import com.metaminer.qrbridge.protocol.QrtPacketParser
 import com.metaminer.qrbridge.protocol.Sha256Verifier
 
 /** Boundary between Android video/QR processing and the pure Kotlin QRT2/LT module. */
@@ -43,7 +43,7 @@ fun interface ProtocolSessionFactory {
 }
 
 class Qrt2ProtocolSession : ProtocolSession {
-    private val parser = Qrt2PacketParser()
+    private val parser = QrtPacketParser()
     private val decoder = LtDecoder()
     private var duplicates = 0
     private var verified: VerifiedFile? = null
@@ -59,7 +59,7 @@ class Qrt2ProtocolSession : ProtocolSession {
 
     override fun addQrPayload(payload: ByteArray): PacketOutcome {
         return try {
-            when (decoder.add(parser.parseBase64Ascii(payload))) {
+            when (decoder.add(parser.parse(payload))) {
                 AddPacketResult.Duplicate -> {
                     duplicates += 1
                     PacketOutcome.Duplicate

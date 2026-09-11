@@ -1,4 +1,4 @@
-"""Generate fixed CPython/QRT2 fixtures consumed by Kotlin JVM tests."""
+"""Generate fixed CPython/QRT3 fixtures consumed by Kotlin JVM tests."""
 
 from __future__ import annotations
 
@@ -12,11 +12,26 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from common.lt_wrapper import LTEncoder, _block_indices
-from common.qr_wire import pack_packet
+from common.qr_wire import LEGACY_MAGIC, _HEADER1, _HEADER2, pack_packet, whiten
 
 
 def b64(value: bytes) -> str:
     return base64.b64encode(value).decode("ascii")
+
+
+def legacy_qrt2_wire(packet, filename: str) -> bytes:
+    """Rebuild a QRT2 frame the way the pre-QRT3 sender did.
+
+    The Kotlin parser has to keep reading these, so the fixtures pin both
+    versions. qr_wire no longer writes QRT2, hence the local copy.
+    """
+    name_bytes = filename.encode("utf-8")
+    header1 = _HEADER1.pack(
+        LEGACY_MAGIC, packet["seq"], packet["seed"], packet["total_k"],
+        bytes.fromhex(str(packet["file_hash"])), len(name_bytes),
+    )
+    header2 = _HEADER2.pack(len(packet["data"]))
+    return base64.b64encode(whiten(header1 + name_bytes + header2 + packet["data"]))
 
 
 def main() -> None:
@@ -58,7 +73,11 @@ def main() -> None:
             str(packet["file_hash"]),
             b64(filename.encode("utf-8")),
             b64(packet["data"]),
-            pack_packet(packet, filename).decode("ascii"),
+            # Both wires are base64-wrapped for transport in this ASCII
+            # properties file; QRT3 frames are raw bytes and would not survive
+            # otherwise. The Kotlin test decodes these before parsing.
+            b64(pack_packet(packet, filename)),
+            b64(legacy_qrt2_wire(packet, filename)),
         ]
         lines.append(f"lt.packet.{seq}=" + "|".join(fields))
 
