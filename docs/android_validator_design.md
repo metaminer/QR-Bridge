@@ -199,12 +199,13 @@ sealed interface ValidationState {
 3. 영상 선택과 `MediaExtractor`/`MediaCodec` 순차 프레임 공급기
 4. ML Kit 다중 QR 인식과 중복 제거
 5. 전체 검증 파이프라인, 진행/취소/결과 화면 연결
-6. 실제 1~8 QR 영상으로 인식률 및 메모리 측정, ROI 최적화
-7. 2차 버전에서 CameraX `VideoCapture` + `ImageAnalysis` 실시간 촬영 검증 추가
+6. 실제 1~10 QR 영상으로 인식률 및 메모리 측정, ROI 최적화
 
-실시간 촬영 검증은 기기별로 Preview, VideoCapture, ImageAnalysis 동시 조합의 지원 해상도와
-처리 비용이 다르므로 MVP 검증 후 진행한다. 분석이 느릴 때는 CameraX의
-`STRATEGY_KEEP_ONLY_LATEST`를 사용해 녹화를 막지 않고 최신 분석 프레임을 유지한다.
+**실시간 촬영 검증은 범위에서 제외한다.** 한 번 구현했다가 제거했다 — 기기별로 Preview,
+VideoCapture, ImageAnalysis 동시 조합의 지원 해상도가 제각각이고, 특히 폰 기본 카메라 앱이
+내주는 UHD 60fps 최고 비트레이트를 앱 내 녹화로는 재현하기 어려워 실제 촬영 조건과
+검증 조건이 어긋났다. 사용자는 기본 카메라 앱으로 촬영하고, 이 앱은 그 영상 파일을
+검증하는 역할만 맡는다. 그 덕에 앱은 카메라 권한도, CameraX 의존성도 필요 없다.
 
 ## 9. 완료 기준
 

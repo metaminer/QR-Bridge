@@ -78,7 +78,7 @@ class SenderTab(ttk.Frame):
         self.cols_var = tk.StringVar(value="1")
         self.cols_combo = ttk.Combobox(
             row, textvariable=self.cols_var,
-            values=tuple(str(value) for value in range(1, 9)),
+            values=tuple(str(value) for value in range(1, 11)),
             width=3, state="readonly",
         )
         self.cols_combo.grid(row=0, column=5, padx=(4, 10))
@@ -185,10 +185,10 @@ class SenderTab(ttk.Frame):
         except ValueError:
             messagebox.showerror("입력 오류", "FPS/중복도/동시 QR 수를 숫자로 입력하세요.")
             return
-        if fps <= 0 or redundancy < 1.0 or not 1 <= cols <= 8:
+        if fps <= 0 or redundancy < 1.0 or not 1 <= cols <= 10:
             messagebox.showerror(
                 "입력 오류",
-                "FPS는 양수, 중복도는 1.0 이상, 동시 QR 수는 1~8이어야 합니다.",
+                "FPS는 양수, 중복도는 1.0 이상, 동시 QR 수는 1~10이어야 합니다.",
             )
             return
         tile_size = self._auto_tile_size(cols)

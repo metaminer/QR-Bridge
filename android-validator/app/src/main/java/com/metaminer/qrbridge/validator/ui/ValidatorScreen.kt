@@ -1,8 +1,5 @@
 package com.metaminer.qrbridge.validator.ui
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -23,41 +20,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.metaminer.qrbridge.validator.camera.LiveCaptureRoute
 import com.metaminer.qrbridge.validator.domain.ValidationProgress
 import com.metaminer.qrbridge.validator.domain.ValidationState
 
 @Composable
 fun ValidatorRoute(viewModel: ValidatorViewModel = viewModel()) {
-    val context = LocalContext.current
-    var liveMode by rememberSaveable { mutableStateOf(false) }
-    val permissions = remember {
-        buildList {
-            add(Manifest.permission.CAMERA)
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            }
-        }.toTypedArray()
-    }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { grants ->
-        if (permissions.all { grants[it] == true }) liveMode = true
-    }
-    if (liveMode) {
-        LiveCaptureRoute(onBack = { liveMode = false })
-        return
-    }
-
     val state by viewModel.state.collectAsState()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.select(uri)
@@ -67,16 +37,6 @@ fun ValidatorRoute(viewModel: ValidatorViewModel = viewModel()) {
         onSelect = { picker.launch(arrayOf("video/mp4")) },
         onStart = viewModel::start,
         onCancel = viewModel::cancel,
-        onLiveCapture = {
-            if (permissions.all { permission ->
-                    ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-                }
-            ) {
-                liveMode = true
-            } else {
-                permissionLauncher.launch(permissions)
-            }
-        },
     )
 }
 
@@ -86,7 +46,6 @@ private fun ValidatorScreen(
     onSelect: () -> Unit,
     onStart: () -> Unit,
     onCancel: () -> Unit,
-    onLiveCapture: () -> Unit,
 ) {
     Scaffold { padding ->
         Column(
@@ -103,7 +62,6 @@ private fun ValidatorScreen(
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = onSelect) { Text("영상 선택") }
-                Button(onClick = onLiveCapture) { Text("실시간 촬영") }
                 if (state is ValidationState.Ready || state is ValidationState.Insufficient || state is ValidationState.Error) {
                     Button(onClick = onStart) { Text("검증 시작") }
                 }
