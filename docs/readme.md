@@ -45,14 +45,14 @@
 
 | 역할 | 패키지 |
 |------|--------|
-| LT 인코딩/디코딩 | `lt-code` |
+| LT 인코딩/디코딩 | 자체 구현 (`common/lt_wrapper.py`) |
 | QR 코드 생성/디코드 | `zxing-cpp` (네이티브 C++ 바인딩 — 아래 참고. 생성: `qrcode`→`segno`→`zxing-cpp`, 디코드: `pyzbar`→`zxing-cpp` 순으로 교체됨) |
 | 이미지 처리 | `Pillow` |
 | 화면 슬라이드쇼 | `tkinter` (표준 라이브러리) |
 
 설치:
 ```bash
-pip install lt-code zxing-cpp Pillow
+pip install zxing-cpp Pillow
 ```
 
 **QR 인코딩 라이브러리 교체 이력**: `sender/encode.py`의 `make_qr_image()`가 QR 하나를

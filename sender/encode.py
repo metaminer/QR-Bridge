@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import math
 import sys
+import threading
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -21,18 +22,50 @@ from common.lt_wrapper import LTEncoder, Packet
 from common.qr_wire import pack_packet
 
 PathLike = Union[str, Path]
+EncoderInput = Union[bytes, str, Path]
 
 
-def build_encoder(data: bytes, chunk_size: int, redundancy: float, seed: int) -> Tuple[LTEncoder, int]:
-    """Wrap *data* in an LTEncoder and compute how many frames to send."""
-    encoder = LTEncoder(data, chunk_size=chunk_size, seed=seed)
-    packet_count = max(encoder.total_k, math.ceil(encoder.total_k * redundancy))
+def build_encoder(
+    data: EncoderInput,
+    chunk_size: int,
+    redundancy: float,
+    seed: int,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    stop_event: Optional[threading.Event] = None,
+) -> Tuple[LTEncoder, int]:
+    """Build an LT encoder from bytes or a file path and size the stream.
+
+    For file inputs the whole file is scanned (hash + temp copy) before the
+    encoder can report its size.  *progress_callback*, when given, is called
+    with ``(bytes_scanned, total_bytes)`` as that scan advances so callers
+    can show progress; *stop_event*, when set, aborts the scan.  Both are
+    ignored for in-memory ``bytes`` input, where nothing is read.
+    """
+    if isinstance(data, bytes):
+        encoder = LTEncoder(data, chunk_size=chunk_size, seed=seed)
+    else:
+        encoder = LTEncoder.from_file(
+            data,
+            chunk_size=chunk_size,
+            seed=seed,
+            progress_callback=progress_callback,
+            stop_event=stop_event,
+        )
+    try:
+        packet_count = max(encoder.total_k, math.ceil(encoder.total_k * redundancy))
+    except Exception:
+        encoder.close()
+        raise
     return encoder, packet_count
 
 
 def encode_file(
-    path: PathLike, chunk_size: int = 1024, redundancy: float = 1.5, seed: int = 0
-) -> Tuple[LTEncoder, List[Packet], str]:
+    path: PathLike,
+    chunk_size: int = 1024,
+    redundancy: float = 1.5,
+    seed: int = 0,
+    lazy: bool = False,
+) -> Tuple[LTEncoder, Union[List[Packet], Iterator[Packet]], str]:
     """Read *path* and LT-encode it into the full ordered list of packets to send.
 
     Returns ``(encoder, packets, filename)`` — ``encoder`` for metadata
@@ -41,11 +74,32 @@ def encode_file(
     original file's base name, e.g. ``"report.pdf"``) to pass alongside each
     packet so the receiver can restore the file under its original name and
     extension.
+
+    By default *packets* is a ``List[Packet]`` containing every packet eagerly.
+    For large files this can use ``packet_count * chunk_size`` bytes of memory
+    at once.  Pass ``lazy=True`` to receive an ``Iterator[Packet]`` instead;
+    packets are produced one at a time via ``encoder.packet(seq)`` and the
+    source file is closed as soon as the iterator is exhausted (or as soon as
+    it is garbage-collected / ``.close()``-ed).  When ``lazy=True`` the caller
+    must consume or close the iterator before the returned *encoder* is
+    discarded — the encoder's underlying file handle is owned by the iterator's
+    cleanup, not by ``encode_file`` itself.
     """
     path = Path(path)
-    data = path.read_bytes()
-    encoder, packet_count = build_encoder(data, chunk_size, redundancy, seed)
-    packets = encoder.packets(packet_count)
+    encoder, packet_count = build_encoder(path, chunk_size, redundancy, seed)
+    if lazy:
+        def _gen() -> Iterator[Packet]:
+            try:
+                for seq in range(packet_count):
+                    yield encoder.packet(seq)
+            finally:
+                encoder.close()
+
+        return encoder, _gen(), path.name
+    try:
+        packets = encoder.packets(packet_count)
+    finally:
+        encoder.close()
     return encoder, packets, path.name
 
 

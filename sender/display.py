@@ -173,6 +173,7 @@ class SenderApp:
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
+        self.encoder.close()
         if clear:
             for tile in self._tiles:
                 try:
@@ -188,13 +189,35 @@ class SenderApp:
             tile.coords(overlay, width // 2, max(12, height - 18))
 
     def _fit_to_canvas(self, img: Image.Image, tile_index: int = 0) -> Image.Image:
+        """Blow the QR matrix up to fill its tile.
+
+        This used to scale by an integer factor, which quietly threw away
+        most of a tile whenever the module count did not divide the space:
+        a 133-module frame in a 366px tile got 362 // 133 = 2, so it drew at
+        266px — 2.0 px per module where the tile had room for 2.7. Modules
+        per camera pixel is the number that decides whether a capture
+        decodes, so that 28% was the single largest loss in the pipeline.
+
+        Filling the tile means module edges no longer land on whole pixels
+        (they alternate between 2 and 3 px wide at a 2.7x scale). NEAREST
+        keeps them hard-edged, and decoders sample module centres derived
+        from the finder patterns rather than assuming a uniform pitch, so
+        the extra size is worth far more than the even pitch it costs.
+
+        The tile canvas is measured directly rather than going through
+        self.tile_size: that attribute is the pre-layout estimate, and the
+        grid usually hands out slightly more than it predicted.
+        """
         canvas = self._tiles[tile_index]
         canvas_width = max(1, canvas.winfo_width())
         canvas_height = max(1, canvas.winfo_height())
-        available = max(1, min(canvas_width, canvas_height, self.tile_size) - 4)
-        w, h = img.size
-        scale = max(1, available // max(w, h))
-        return img.resize((w * scale, h * scale), Image.NEAREST)
+        available = max(1, min(canvas_width, canvas_height) - 4)
+        side = max(img.size)
+        if available <= side:
+            # Not even 1px per module — leave the matrix alone rather than
+            # resampling modules away entirely.
+            return img
+        return img.resize((available, available), Image.NEAREST)
 
     def _play_step(self) -> None:
         if not self._running or not self.canvas.winfo_exists():
@@ -351,10 +374,9 @@ def main(argv=None) -> int:
         print("--chunk-size는 1~1024 사이여야 합니다 (QR 프레임당 용량 제한)", file=sys.stderr)
         return 1
 
-    data = path.read_bytes()
-    encoder, packet_count = build_encoder(data, args.chunk_size, args.redundancy, args.seed)
+    encoder, packet_count = build_encoder(path, args.chunk_size, args.redundancy, args.seed)
 
-    print(f"파일: {path.name} ({len(data)} bytes)")
+    print(f"파일: {path.name} ({encoder.data_length} bytes)")
     print(f"청크 수(K): {encoder.total_k}, 전송 프레임 수: {packet_count} (redundancy={args.redundancy})")
     print(f"SHA-256: {encoder.file_hash}")
     print("Tkinter 창에서 ESC를 누르면 종료됩니다.")

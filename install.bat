@@ -1,7 +1,7 @@
 @echo off
 cd /d %~dp0
 echo [install] offline packages...
-C:\Python314\python.exe -m pip install --no-index --find-links=wheels zxing-cpp Pillow lt-code
+C:\Python314\python.exe -m pip install --no-index --find-links=wheels zxing-cpp Pillow
 if errorlevel 1 (
     echo [error] core package install failed. check wheels\*.whl
     pause

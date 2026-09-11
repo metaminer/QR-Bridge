@@ -49,7 +49,9 @@ class SenderTab(ttk.Frame):
         self.file_path: Optional[Path] = None
         self._worker: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
+        self._run_generation = 0
         self._log_queue: "queue.Queue[str]" = queue.Queue()
+        self._progress_queue: "queue.Queue[Optional[float]]" = queue.Queue()
         self._sender_app: Optional[SenderApp] = None
         self._loop_started_at: Optional[float] = None
         self._log_history: list[str] = []
@@ -158,6 +160,18 @@ class SenderTab(ttk.Frame):
         )
 
     def _build_content_area(self) -> None:
+        # Encoding progress: shown only while the file is being scanned
+        # (read + hash) into the LT encoder; hidden otherwise.
+        self._progress_row = ttk.Frame(self)
+        self.progress_label_var = tk.StringVar(value="인코딩 진행률: 0%")
+        ttk.Label(self._progress_row, textvariable=self.progress_label_var, anchor="w").pack(
+            side="left"
+        )
+        self._progress_bar = ttk.Progressbar(
+            self._progress_row, orient="horizontal", mode="determinate", maximum=1000
+        )
+        self._progress_bar.pack(side="left", fill="x", expand=True, padx=(8, 0))
+
         qr_panel = ttk.LabelFrame(self, text="QR 슬라이드쇼", padding=4)
         qr_panel.pack(fill="both", expand=True)
 
@@ -231,9 +245,12 @@ class SenderTab(ttk.Frame):
         grid_cols = math.ceil(cols / rows)
         target_size = tile_size * grid_cols
 
+        self._run_generation += 1
+        run_generation = self._run_generation
         self._cancel_event.clear()
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
+        self._show_encode_progress()
         self._log(
             f"[시작] {self.file_path.name} 인코딩 중... "
             f"(redundancy={redundancy}, QR={cols}×{tile_size}px, "
@@ -242,37 +259,73 @@ class SenderTab(ttk.Frame):
 
         self._worker = threading.Thread(
             target=self._encode_worker,
-            args=(self.file_path, redundancy, target_size, fps, cols, ec_level),
+            args=(
+                self.file_path, redundancy, target_size, fps, cols, ec_level,
+                run_generation,
+            ),
             daemon=True,
         )
         self._worker.start()
 
     def _on_stop(self) -> None:
+        self._run_generation += 1
         self._cancel_event.set()
+        self._hide_encode_progress()
         self._clear_qr_display()
         self._log("[정지] 사용자가 전송을 중단했습니다.")
         self._reset_buttons()
 
     # --- background work (runs off the Tk main thread) ----------------------
 
+    PROGRESS_LOG_STEP = 10  # one log line per 10% of the file scan
+
     def _encode_worker(
         self, path: Path, redundancy: float, target_size: int, fps: float, cols: int,
-        ec_level: str,
+        ec_level: str, run_generation: int,
     ) -> None:
-        """Read the file and build only the encoder; packets stream on demand."""
+        """Scan the file and build only the encoder; packets stream on demand.
+
+        The file is read in 1 MB chunks (hashed + copied to a temp file), so
+        progress is reported continuously through ``self._progress_queue``
+        and the scan stops promptly when the user hits 정지 (stop_event is
+        checked per chunk).  Tkinter is only touched via self.after(...).
+        """
+        last_logged_percent = -1
+
+        def on_progress(read_bytes: int, total_bytes: int) -> None:
+            nonlocal last_logged_percent
+            if total_bytes <= 0:
+                return
+            percent = read_bytes * 100 // total_bytes
+            self._progress_queue.put(percent / 100.0)
+            if percent // self.PROGRESS_LOG_STEP > last_logged_percent:
+                last_logged_percent = percent // self.PROGRESS_LOG_STEP
+                self._log(f"[읽기] {percent}%  ({read_bytes}/{total_bytes} 바이트)")
+
         try:
-            data = path.read_bytes()
             encoder, packet_count = build_encoder(
-                data, chunk_size=1024, redundancy=redundancy, seed=0
+                path,
+                chunk_size=1024,
+                redundancy=redundancy,
+                seed=0,
+                progress_callback=on_progress,
+                stop_event=self._cancel_event,
             )
         except Exception as exc:  # surface any failure back to the UI thread
-            self._log_queue.put(f"[오류] 인코딩 실패: {exc}")
-            self.after(0, self._reset_buttons)
+            if run_generation == self._run_generation:
+                self._progress_queue.put(None)
+                if isinstance(exc, InterruptedError):
+                    self._log_queue.put("[정지] 인코딩을 중단했습니다.")
+                else:
+                    self._log_queue.put(f"[오류] 인코딩 실패: {exc}")
+                self.after(0, self._reset_buttons_if_current, run_generation)
             return
 
-        if self._cancel_event.is_set():
+        if self._cancel_event.is_set() or run_generation != self._run_generation:
+            encoder.close()
             return
 
+        self._progress_queue.put(None)
         self._log_queue.put(
             f"[인코더 준비] 청크 K={encoder.total_k}, 전송 패킷 {packet_count}개 "
             f"(SHA-256 {encoder.file_hash[:16]}...)"
@@ -280,17 +333,19 @@ class SenderTab(ttk.Frame):
         # SenderApp/Tkinter must be touched on the main thread only.
         self.after(
             0, self._start_slideshow,
-            encoder, packet_count, target_size, fps, cols, ec_level,
+            encoder, packet_count, target_size, fps, cols, ec_level, run_generation,
         )
 
     def _start_slideshow(
         self, encoder, packet_count: int, target_size: int, fps: float, cols: int,
-        ec_level: str,
+        ec_level: str, run_generation: int,
     ) -> None:
-        if self._cancel_event.is_set():
-            self._reset_buttons()
+        if self._cancel_event.is_set() or run_generation != self._run_generation:
+            encoder.close()
+            self._hide_encode_progress()
             return
 
+        self._hide_encode_progress()
         self._clear_qr_display(show_placeholder=False)
         self._loop_started_at = None
         filename = self.file_path.name if self.file_path is not None else ""
@@ -345,6 +400,22 @@ class SenderTab(ttk.Frame):
             self._draw_qr_placeholder()
         else:
             self._qr_placeholder.pack_forget()
+
+    # --- encoding progress (main thread only) --------------------------------
+
+    def _show_encode_progress(self) -> None:
+        """Show the progress bar and reset it to 0% for a new encode run."""
+        self._progress_bar["value"] = 0
+        self.progress_label_var.set("인코딩 진행률: 0%")
+        self._progress_row.pack(fill="x", pady=(0, 6))
+
+    def _hide_encode_progress(self) -> None:
+        self._progress_row.pack_forget()
+
+    def _set_encode_progress(self, fraction: float) -> None:
+        fraction = min(1.0, max(0.0, fraction))
+        self._progress_bar["value"] = int(fraction * 1000)
+        self.progress_label_var.set(f"인코딩 진행률: {fraction * 100:.0f}%")
 
     # --- log panel -----------------------------------------------------------
 
@@ -414,6 +485,16 @@ class SenderTab(ttk.Frame):
                 self._append_popup_log(latest)
         except queue.Empty:
             pass
+        # Drain the progress queue; only the latest value is displayed, so a
+        # fast scan never floods the UI — the bar just catches up to 100%.
+        latest_progress: Optional[float] = None
+        try:
+            while True:
+                latest_progress = self._progress_queue.get_nowait()
+        except queue.Empty:
+            pass
+        if latest_progress is not None:
+            self._set_encode_progress(latest_progress)
         if latest is not None:
             self.status_var.set(latest)
         self.after(100, self._poll_log_queue)
@@ -421,3 +502,7 @@ class SenderTab(ttk.Frame):
     def _reset_buttons(self) -> None:
         self.start_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
+
+    def _reset_buttons_if_current(self, run_generation: int) -> None:
+        if run_generation == self._run_generation:
+            self._reset_buttons()
